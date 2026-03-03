@@ -1,0 +1,21 @@
+{
+  "name": "dnd-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server for DnD .NET debugger",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "vscode-jsonrpc": "^8.2.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.3",
+    "typescript": "^5.9.3"
+  }
+}
