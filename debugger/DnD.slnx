@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DnD.Core/DnD.Core.csproj" />
+    <Project Path="src/DnD.Host/DnD.Host.csproj" />
+    <Project Path="src/DnD.Protocol/DnD.Protocol.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DnD.Core.Tests/DnD.Core.Tests.csproj" />
+    <Project Path="tests/DnD.Host.Tests/DnD.Host.Tests.csproj" />
+  </Folder>
+</Solution>
