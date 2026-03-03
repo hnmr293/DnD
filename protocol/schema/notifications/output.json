@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "output",
+  "description": "Output from the debuggee process",
+  "params": {
+    "type": "object",
+    "properties": {
+      "category": { "$ref": "common.json#/definitions/OutputCategory" },
+      "output": { "type": "string" }
+    },
+    "required": ["category", "output"]
+  }
+}

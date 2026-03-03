@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "attach",
+  "description": "Attach to an existing process",
+  "request": {
+    "type": "object",
+    "properties": {
+      "processId": { "type": "integer", "description": "Target process ID" }
+    },
+    "required": ["processId"]
+  },
+  "response": {
+    "type": "object",
+    "properties": {
+      "processId": { "type": "integer" }
+    },
+    "required": ["processId"]
+  }
+}

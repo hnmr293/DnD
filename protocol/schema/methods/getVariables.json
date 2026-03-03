@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "getVariables",
+  "description": "Get variables for the given scope",
+  "request": {
+    "type": "object",
+    "properties": {
+      "variablesReference": { "type": "integer", "description": "Scope handle returned by getStackTrace or a previous getVariables" }
+    },
+    "required": ["variablesReference"]
+  },
+  "response": {
+    "type": "object",
+    "properties": {
+      "variables": {
+        "type": "array",
+        "items": { "$ref": "common.json#/definitions/Variable" }
+      }
+    },
+    "required": ["variables"]
+  }
+}

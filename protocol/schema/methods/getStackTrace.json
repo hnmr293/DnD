@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "getStackTrace",
+  "description": "Get the current stack trace",
+  "request": {
+    "type": "object",
+    "properties": {
+      "threadId": { "type": ["integer", "null"] }
+    }
+  },
+  "response": {
+    "type": "object",
+    "properties": {
+      "stackFrames": {
+        "type": "array",
+        "items": { "$ref": "common.json#/definitions/StackFrame" }
+      }
+    },
+    "required": ["stackFrames"]
+  }
+}

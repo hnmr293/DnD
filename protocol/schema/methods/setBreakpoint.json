@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "setBreakpoint",
+  "description": "Set a breakpoint at the specified source location",
+  "request": {
+    "type": "object",
+    "properties": {
+      "file": { "type": "string", "description": "Source file path" },
+      "line": { "type": "integer", "description": "Line number (1-based)" }
+    },
+    "required": ["file", "line"]
+  },
+  "response": {
+    "type": "object",
+    "properties": {
+      "breakpoint": { "$ref": "common.json#/definitions/Breakpoint" }
+    },
+    "required": ["breakpoint"]
+  }
+}

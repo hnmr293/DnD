@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "launch",
+  "description": "Launch a process under the debugger",
+  "request": {
+    "type": "object",
+    "properties": {
+      "program": { "type": "string", "description": "Path to the executable" },
+      "args": { "type": "array", "items": { "type": "string" }, "default": [] },
+      "cwd": { "type": ["string", "null"], "description": "Working directory" },
+      "env": { "type": ["object", "null"], "additionalProperties": { "type": "string" } },
+      "stopAtEntry": { "type": "boolean", "default": false }
+    },
+    "required": ["program"]
+  },
+  "response": {
+    "type": "object",
+    "properties": {
+      "processId": { "type": "integer" }
+    },
+    "required": ["processId"]
+  }
+}

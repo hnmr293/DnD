@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "evaluate",
+  "description": "Evaluate an expression in the current context",
+  "request": {
+    "type": "object",
+    "properties": {
+      "expression": { "type": "string" },
+      "frameId": { "type": ["integer", "null"], "description": "Stack frame context for evaluation" }
+    },
+    "required": ["expression"]
+  },
+  "response": {
+    "type": "object",
+    "properties": {
+      "result": { "type": "string" },
+      "type": { "type": ["string", "null"] },
+      "variablesReference": { "type": "integer" }
+    },
+    "required": ["result", "variablesReference"]
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "common.json",
+  "definitions": {
+    "Breakpoint": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer" },
+        "file": { "type": "string" },
+        "line": { "type": "integer" },
+        "verified": { "type": "boolean" }
+      },
+      "required": ["id", "file", "line", "verified"]
+    },
+    "StackFrame": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "integer" },
+        "name": { "type": "string" },
+        "file": { "type": ["string", "null"] },
+        "line": { "type": ["integer", "null"] },
+        "column": { "type": ["integer", "null"] },
+        "moduleId": { "type": ["string", "null"] }
+      },
+      "required": ["id", "name"]
+    },
+    "Variable": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "value": { "type": "string" },
+        "type": { "type": ["string", "null"] },
+        "variablesReference": { "type": "integer" }
+      },
+      "required": ["name", "value", "variablesReference"]
+    },
+    "StopReason": {
+      "type": "string",
+      "enum": ["breakpoint", "step", "pause", "exception", "entry"]
+    },
+    "OutputCategory": {
+      "type": "string",
+      "enum": ["stdout", "stderr", "console"]
+    }
+  }
+}

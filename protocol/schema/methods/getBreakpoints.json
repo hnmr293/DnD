@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "getBreakpoints",
+  "description": "Get all active breakpoints",
+  "request": { "type": "object", "properties": {} },
+  "response": {
+    "type": "object",
+    "properties": {
+      "breakpoints": {
+        "type": "array",
+        "items": { "$ref": "common.json#/definitions/Breakpoint" }
+      }
+    },
+    "required": ["breakpoints"]
+  }
+}

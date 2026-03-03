@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "stepOut",
+  "description": "Step out of the current function",
+  "request": {
+    "type": "object",
+    "properties": {
+      "threadId": { "type": ["integer", "null"] }
+    }
+  },
+  "response": { "type": "object", "properties": {} }
+}

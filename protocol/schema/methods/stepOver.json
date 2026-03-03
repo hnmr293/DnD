@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "stepOver",
+  "description": "Step over to the next line",
+  "request": {
+    "type": "object",
+    "properties": {
+      "threadId": { "type": ["integer", "null"] }
+    }
+  },
+  "response": { "type": "object", "properties": {} }
+}
