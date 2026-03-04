@@ -28,10 +28,39 @@ public class StubDebuggerEngine : IDebuggerEngine
         return Task.CompletedTask;
     }
 
-    public Task ContinueAsync(ContinueRequest request) => Task.CompletedTask;
-    public Task StepInAsync(StepInRequest request) => Task.CompletedTask;
-    public Task StepOverAsync(StepOverRequest request) => Task.CompletedTask;
-    public Task StepOutAsync(StepOutRequest request) => Task.CompletedTask;
+    public Task ContinueAsync(ContinueRequest request)
+    {
+        FireStoppedAfterDelay(StopReason.Breakpoint);
+        return Task.CompletedTask;
+    }
+
+    public Task StepInAsync(StepInRequest request)
+    {
+        FireStoppedAfterDelay(StopReason.Step);
+        return Task.CompletedTask;
+    }
+
+    public Task StepOverAsync(StepOverRequest request)
+    {
+        FireStoppedAfterDelay(StopReason.Step);
+        return Task.CompletedTask;
+    }
+
+    public Task StepOutAsync(StepOutRequest request)
+    {
+        FireStoppedAfterDelay(StopReason.Step);
+        return Task.CompletedTask;
+    }
+
+    private void FireStoppedAfterDelay(StopReason reason)
+    {
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(50);
+            Stopped?.Invoke(this, new StoppedEventArgs(
+                new StoppedNotification(reason, 1, "Stub stopped")));
+        });
+    }
 
     public Task<SetBreakpointResponse> SetBreakpointAsync(SetBreakpointRequest request)
         => Task.FromResult(new SetBreakpointResponse(
