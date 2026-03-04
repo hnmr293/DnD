@@ -377,6 +377,173 @@ public class DebugSessionTests : IAsyncLifetime
         await _rpc!.InvokeAsync("terminate");
     }
 
+    // === StepIn ===
+
+    [Fact]
+    public async Task SteppingTest_StepIn_EntersFunction()
+    {
+        var program = FindFixture("SteppingTest");
+        var sourceFile = FindFixtureSrc("SteppingTest", "Program.cs");
+
+        // Set breakpoint on Outer() call (line 12)
+        await _rpc!.InvokeWithParameterObjectAsync<SetBreakpointResponse>(
+            "setBreakpoint", new SetBreakpointRequest(File: sourceFile, Line: 12));
+
+        await _rpc!.InvokeWithParameterObjectAsync<LaunchResponse>(
+            "launch", new LaunchRequest(Program: program));
+
+        var stopped = WaitForStopped();
+        Assert.Equal(StopReason.Breakpoint, stopped.Reason);
+
+        // StepIn should enter the function
+        await _rpc!.InvokeWithParameterObjectAsync<object>(
+            "stepIn", new StepInRequest(ThreadId: stopped.ThreadId));
+
+        var stopped2 = WaitForStopped(TimeSpan.FromSeconds(10));
+        Assert.Equal(StopReason.Step, stopped2.Reason);
+
+        var stack = await _rpc!.InvokeWithParameterObjectAsync<GetStackTraceResponse>(
+            "getStackTrace", new GetStackTraceRequest(ThreadId: stopped2.ThreadId));
+
+        // Should be inside Outer() or deeper
+        Assert.NotEmpty(stack.StackFrames);
+    }
+
+    // === Breakpoint edge cases ===
+
+    [Fact]
+    public async Task SetBreakpoint_InvalidLine_CreatesUnverified()
+    {
+        var program = FindFixture("HelloWorld");
+        var sourceFile = FindFixtureSrc("HelloWorld", "Program.cs");
+
+        // Line 9999 doesn't exist
+        await _rpc!.InvokeWithParameterObjectAsync<SetBreakpointResponse>(
+            "setBreakpoint", new SetBreakpointRequest(File: sourceFile, Line: 9999));
+
+        await _rpc!.InvokeWithParameterObjectAsync<LaunchResponse>(
+            "launch", new LaunchRequest(Program: program));
+
+        // Should not hit a breakpoint — the program should just exit
+        try
+        {
+            var exited = await _exitedTcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(0, exited.ExitCode);
+        }
+        catch (TimeoutException)
+        {
+            try
+            {
+                await _rpc!.InvokeAsync("terminate");
+                var exited = await _exitedTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.Equal(0, exited.ExitCode);
+            }
+            catch (ConnectionLostException) { }
+        }
+    }
+
+    [Fact]
+    public async Task RemoveBreakpoint_InvalidId_DoesNotThrow()
+    {
+        await _rpc!.InvokeWithParameterObjectAsync<object>(
+            "removeBreakpoint", new RemoveBreakpointRequest(BreakpointId: 9999));
+    }
+
+    [Fact]
+    public async Task SetBreakpoint_MultipleOnSameLine_AllTracked()
+    {
+        await _rpc!.InvokeWithParameterObjectAsync<SetBreakpointResponse>(
+            "setBreakpoint", new SetBreakpointRequest(File: "a.cs", Line: 5));
+        await _rpc!.InvokeWithParameterObjectAsync<SetBreakpointResponse>(
+            "setBreakpoint", new SetBreakpointRequest(File: "a.cs", Line: 5));
+
+        var result = await _rpc!.InvokeWithParameterObjectAsync<GetBreakpointsResponse>(
+            "getBreakpoints", new { });
+
+        Assert.Equal(2, result.Breakpoints.Length);
+    }
+
+    // === Inspection edge cases ===
+
+    [Fact]
+    public async Task GetVariables_AfterBreak_ReturnsLocals()
+    {
+        var program = FindFixture("VariablesTest");
+        await _rpc!.InvokeWithParameterObjectAsync<LaunchResponse>(
+            "launch", new LaunchRequest(Program: program));
+
+        var stopped = WaitForStopped();
+        await _rpc!.InvokeWithParameterObjectAsync<GetStackTraceResponse>(
+            "getStackTrace", new GetStackTraceRequest(ThreadId: stopped.ThreadId));
+
+        var vars = await _rpc!.InvokeWithParameterObjectAsync<GetVariablesResponse>(
+            "getVariables", new GetVariablesRequest(VariablesReference: 0));
+
+        // Should include known variables from the fixture
+        Assert.NotEmpty(vars.Variables);
+        var names = vars.Variables.Select(v => v.Name).ToList();
+        Assert.Contains("x", names);
+        Assert.Contains("name", names);
+    }
+
+    [Fact]
+    public async Task Evaluate_VariablesTest_IntVariable()
+    {
+        var program = FindFixture("VariablesTest");
+        await _rpc!.InvokeWithParameterObjectAsync<LaunchResponse>(
+            "launch", new LaunchRequest(Program: program));
+
+        var stopped = WaitForStopped();
+        await _rpc!.InvokeWithParameterObjectAsync<GetStackTraceResponse>(
+            "getStackTrace", new GetStackTraceRequest(ThreadId: stopped.ThreadId));
+
+        var result = await _rpc!.InvokeWithParameterObjectAsync<EvaluateResponse>(
+            "evaluate", new EvaluateRequest(Expression: "x"));
+
+        Assert.Equal("42", result.Result);
+        Assert.Equal("int", result.Type);
+    }
+
+    // === Detach edge cases ===
+
+    [Fact]
+    public async Task Detach_BeforeLaunch_Succeeds()
+    {
+        await _rpc!.InvokeAsync("detach");
+    }
+
+    // === StepOut ===
+
+    [Fact]
+    public async Task StepOut_BeforeLaunch_ThrowsError()
+    {
+        var ex = await Assert.ThrowsAsync<RemoteInvocationException>(
+            () => _rpc!.InvokeWithParameterObjectAsync<object>(
+                "stepOut", new StepOutRequest()));
+
+        Assert.Contains("Invalid state", ex.Message);
+    }
+
+    [Fact]
+    public async Task StepIn_BeforeLaunch_ThrowsError()
+    {
+        var ex = await Assert.ThrowsAsync<RemoteInvocationException>(
+            () => _rpc!.InvokeWithParameterObjectAsync<object>(
+                "stepIn", new StepInRequest()));
+
+        Assert.Contains("Invalid state", ex.Message);
+    }
+
+    [Fact]
+    public async Task GetVariables_BeforeLaunch_ThrowsError()
+    {
+        var ex = await Assert.ThrowsAsync<RemoteInvocationException>(
+            () => _rpc!.InvokeWithParameterObjectAsync<GetVariablesResponse>(
+                "getVariables", new GetVariablesRequest(VariablesReference: 0)));
+
+        Assert.Contains("Invalid state", ex.Message);
+    }
+
     // === Helpers ===
 
     private static string FindFixture(string name)

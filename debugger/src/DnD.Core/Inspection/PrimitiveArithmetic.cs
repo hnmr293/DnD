@@ -143,7 +143,7 @@ public static class PrimitiveArithmetic
         return null;
     }
 
-    private static object? Compute(object left, BinaryOp op, object right)
+    internal static object? Compute(object left, BinaryOp op, object right)
     {
         // Promote to common type
         if (left is double || right is double)

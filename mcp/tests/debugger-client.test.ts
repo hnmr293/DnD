@@ -87,6 +87,89 @@ describe("DebuggerClient (stub mode)", () => {
     expect(stopped.threadId).toBe(1);
   });
 
+  it("should remove a breakpoint", async () => {
+    client = new DebuggerClient(HOST_PATH, ["--stub"]);
+    await client.start();
+
+    const bp = await client.setBreakpoint({ file: "Program.cs", line: 10 });
+    await client.removeBreakpoint({ breakpointId: bp.breakpoint.id });
+
+    const result = await client.getBreakpoints();
+    expect(result.breakpoints.length).toBe(0);
+  });
+
+  it("should get variables", async () => {
+    client = new DebuggerClient(HOST_PATH, ["--stub"]);
+    await client.start();
+
+    await client.launch({ program: "test.dll" });
+    const result = await client.getVariables({ variablesReference: 0 });
+    expect(result.variables.length).toBeGreaterThan(0);
+    expect(result.variables[0].name).toBe("x");
+  });
+
+  it("should handle detach", async () => {
+    client = new DebuggerClient(HOST_PATH, ["--stub"]);
+    await client.start();
+
+    await client.launch({ program: "test.dll" });
+    await client.detach();
+    // Should not throw
+  });
+
+  it("should report isConnected correctly", async () => {
+    client = new DebuggerClient(HOST_PATH, ["--stub"]);
+    expect(client.isConnected).toBe(false);
+
+    await client.start();
+    expect(client.isConnected).toBe(true);
+
+    await client.dispose();
+    expect(client.isConnected).toBe(false);
+  });
+
+  it("should throw when calling method before start", async () => {
+    client = new DebuggerClient(HOST_PATH, ["--stub"]);
+    // Not started — should throw "Not connected"
+    await expect(client.launch({ program: "test.dll" }))
+      .rejects.toThrow("Not connected");
+  });
+
+  it("should handle unicode file paths in breakpoints", async () => {
+    client = new DebuggerClient(HOST_PATH, ["--stub"]);
+    await client.start();
+
+    const result = await client.setBreakpoint({ file: "ソース/テスト.cs", line: 1 });
+    expect(result.breakpoint.file).toBe("ソース/テスト.cs");
+  });
+
+  it("should handle multiple breakpoints", async () => {
+    client = new DebuggerClient(HOST_PATH, ["--stub"]);
+    await client.start();
+
+    const bp1 = await client.setBreakpoint({ file: "a.cs", line: 1 });
+    const bp2 = await client.setBreakpoint({ file: "b.cs", line: 2 });
+    const bp3 = await client.setBreakpoint({ file: "c.cs", line: 3 });
+
+    expect(bp1.breakpoint.id).not.toBe(bp2.breakpoint.id);
+    expect(bp2.breakpoint.id).not.toBe(bp3.breakpoint.id);
+  });
+
+  it("should handle output notification", async () => {
+    client = new DebuggerClient(HOST_PATH, ["--stub"]);
+    await client.start();
+
+    // Register output listener — stub may or may not fire this,
+    // but subscription should not throw
+    const outputs: any[] = [];
+    client.on("output", (params) => {
+      outputs.push(params);
+    });
+
+    await client.launch({ program: "test.dll" });
+    // Just verify we can subscribe without errors
+  });
+
   it("should run a full debug session", async () => {
     client = new DebuggerClient(HOST_PATH, ["--stub"]);
     await client.start();

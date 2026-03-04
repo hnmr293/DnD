@@ -263,4 +263,364 @@ public class ExpressionParserTests
         Assert.Equal("x", ((NameNode)bin.Left).Name);
         Assert.Equal(1, ((LiteralNode)bin.Right).Value);
     }
+
+    // === Additional edge cases ===
+
+    [Fact]
+    public void Parse_LongLiteral()
+    {
+        var node = ExpressionParser.Parse("42L");
+        var lit = Assert.IsType<LiteralNode>(node);
+        Assert.Equal(42L, lit.Value);
+        Assert.Equal(LiteralKind.Long, lit.Kind);
+    }
+
+    [Fact]
+    public void Parse_LongLiteral_Lowercase()
+    {
+        var node = ExpressionParser.Parse("100l");
+        var lit = Assert.IsType<LiteralNode>(node);
+        Assert.Equal(100L, lit.Value);
+        Assert.Equal(LiteralKind.Long, lit.Kind);
+    }
+
+    [Fact]
+    public void Parse_EmptyString()
+    {
+        var node = ExpressionParser.Parse("\"\"");
+        var lit = Assert.IsType<LiteralNode>(node);
+        Assert.Equal("", lit.Value);
+        Assert.Equal(LiteralKind.String, lit.Kind);
+    }
+
+    [Fact]
+    public void Parse_StringWithEscapes()
+    {
+        var node = ExpressionParser.Parse("\"tab\\there\\\\quote\\\"end\"");
+        var lit = Assert.IsType<LiteralNode>(node);
+        Assert.Equal("tab\there\\quote\"end", lit.Value);
+    }
+
+    [Fact]
+    public void Parse_UnderscoreIdentifier()
+    {
+        var node = ExpressionParser.Parse("_private");
+        Assert.IsType<NameNode>(node);
+        Assert.Equal("_private", ((NameNode)node).Name);
+    }
+
+    [Fact]
+    public void Parse_IdentifierWithDigits()
+    {
+        var node = ExpressionParser.Parse("var1");
+        Assert.IsType<NameNode>(node);
+        Assert.Equal("var1", ((NameNode)node).Name);
+    }
+
+    [Fact]
+    public void Parse_WhitespaceHandling()
+    {
+        var node = ExpressionParser.Parse("  a  +  b  ");
+        var bin = Assert.IsType<BinaryOpNode>(node);
+        Assert.Equal(BinaryOp.Add, bin.Op);
+        Assert.Equal("a", ((NameNode)bin.Left).Name);
+        Assert.Equal("b", ((NameNode)bin.Right).Name);
+    }
+
+    [Fact]
+    public void Parse_NoWhitespace()
+    {
+        var node = ExpressionParser.Parse("a+b*c");
+        var add = Assert.IsType<BinaryOpNode>(node);
+        Assert.Equal(BinaryOp.Add, add.Op);
+    }
+
+    // === All binary operators ===
+
+    [Theory]
+    [InlineData("-", BinaryOp.Sub)]
+    [InlineData("*", BinaryOp.Mul)]
+    [InlineData("/", BinaryOp.Div)]
+    [InlineData("%", BinaryOp.Mod)]
+    public void Parse_AllArithmeticOps(string opStr, BinaryOp expectedOp)
+    {
+        var node = ExpressionParser.Parse($"a {opStr} b");
+        var bin = Assert.IsType<BinaryOpNode>(node);
+        Assert.Equal(expectedOp, bin.Op);
+    }
+
+    [Theory]
+    [InlineData("<", BinaryOp.Lt)]
+    [InlineData(">", BinaryOp.Gt)]
+    [InlineData(">=", BinaryOp.GtEq)]
+    public void Parse_RemainingComparisonOps(string opStr, BinaryOp expectedOp)
+    {
+        var node = ExpressionParser.Parse($"a {opStr} b");
+        var bin = Assert.IsType<BinaryOpNode>(node);
+        Assert.Equal(expectedOp, bin.Op);
+    }
+
+    // === Operator precedence and associativity ===
+
+    [Fact]
+    public void Parse_MultiplyBeforeAdd()
+    {
+        // 1 + 2 * 3 => 1 + (2 * 3)
+        var node = ExpressionParser.Parse("1 + 2 * 3");
+        var add = Assert.IsType<BinaryOpNode>(node);
+        Assert.Equal(BinaryOp.Add, add.Op);
+        Assert.Equal(1, ((LiteralNode)add.Left).Value);
+        var mul = Assert.IsType<BinaryOpNode>(add.Right);
+        Assert.Equal(BinaryOp.Mul, mul.Op);
+        Assert.Equal(2, ((LiteralNode)mul.Left).Value);
+        Assert.Equal(3, ((LiteralNode)mul.Right).Value);
+    }
+
+    [Fact]
+    public void Parse_ComparisonBeforeEquality()
+    {
+        // a < b == c  =>  (a < b) == c
+        var node = ExpressionParser.Parse("a < b == c");
+        var eq = Assert.IsType<BinaryOpNode>(node);
+        Assert.Equal(BinaryOp.Eq, eq.Op);
+        var lt = Assert.IsType<BinaryOpNode>(eq.Left);
+        Assert.Equal(BinaryOp.Lt, lt.Op);
+    }
+
+    [Fact]
+    public void Parse_EqualityBeforeAnd()
+    {
+        // a == b && c != d  =>  (a == b) && (c != d)
+        var node = ExpressionParser.Parse("a == b && c != d");
+        var and = Assert.IsType<BinaryOpNode>(node);
+        Assert.Equal(BinaryOp.And, and.Op);
+        var eq = Assert.IsType<BinaryOpNode>(and.Left);
+        Assert.Equal(BinaryOp.Eq, eq.Op);
+        var neq = Assert.IsType<BinaryOpNode>(and.Right);
+        Assert.Equal(BinaryOp.NotEq, neq.Op);
+    }
+
+    [Fact]
+    public void Parse_AndBeforeOr()
+    {
+        // a || b && c  =>  a || (b && c)
+        var node = ExpressionParser.Parse("a || b && c");
+        var or = Assert.IsType<BinaryOpNode>(node);
+        Assert.Equal(BinaryOp.Or, or.Op);
+        Assert.Equal("a", ((NameNode)or.Left).Name);
+        var and = Assert.IsType<BinaryOpNode>(or.Right);
+        Assert.Equal(BinaryOp.And, and.Op);
+    }
+
+    [Fact]
+    public void Parse_LeftAssociativity_Addition()
+    {
+        // a + b + c => (a + b) + c (left-to-right)
+        var node = ExpressionParser.Parse("a + b + c");
+        var outer = Assert.IsType<BinaryOpNode>(node);
+        Assert.Equal(BinaryOp.Add, outer.Op);
+        Assert.Equal("c", ((NameNode)outer.Right).Name);
+        var inner = Assert.IsType<BinaryOpNode>(outer.Left);
+        Assert.Equal(BinaryOp.Add, inner.Op);
+        Assert.Equal("a", ((NameNode)inner.Left).Name);
+        Assert.Equal("b", ((NameNode)inner.Right).Name);
+    }
+
+    [Fact]
+    public void Parse_LeftAssociativity_Multiply()
+    {
+        // a * b * c => (a * b) * c
+        var node = ExpressionParser.Parse("a * b * c");
+        var outer = Assert.IsType<BinaryOpNode>(node);
+        Assert.Equal(BinaryOp.Mul, outer.Op);
+        Assert.Equal("c", ((NameNode)outer.Right).Name);
+        var inner = Assert.IsType<BinaryOpNode>(outer.Left);
+        Assert.Equal(BinaryOp.Mul, inner.Op);
+    }
+
+    // === Deeply nested expressions ===
+
+    [Fact]
+    public void Parse_DeeplyNestedParens()
+    {
+        var node = ExpressionParser.Parse("((((x))))");
+        Assert.IsType<NameNode>(node);
+        Assert.Equal("x", ((NameNode)node).Name);
+    }
+
+    [Fact]
+    public void Parse_ChainedMethodCalls()
+    {
+        // a.B().C().D()
+        var node = ExpressionParser.Parse("a.B().C().D()");
+        var d = Assert.IsType<MethodCallNode>(node);
+        Assert.Equal("D", d.MethodName);
+        var c = Assert.IsType<MethodCallNode>(d.Object);
+        Assert.Equal("C", c.MethodName);
+        var b = Assert.IsType<MethodCallNode>(c.Object);
+        Assert.Equal("B", b.MethodName);
+        Assert.Equal("a", ((NameNode)b.Object).Name);
+    }
+
+    [Fact]
+    public void Parse_NestedMethodCallInArgs()
+    {
+        // a.Method(b.Value)
+        var node = ExpressionParser.Parse("a.Method(b.Value)");
+        var call = Assert.IsType<MethodCallNode>(node);
+        Assert.Equal("Method", call.MethodName);
+        Assert.Single(call.Arguments);
+        var arg = Assert.IsType<MemberAccessNode>(call.Arguments[0]);
+        Assert.Equal("Value", arg.MemberName);
+    }
+
+    [Fact]
+    public void Parse_MethodWithMultipleComplexArgs()
+    {
+        // obj.Call(1 + 2, x * 3)
+        var node = ExpressionParser.Parse("obj.Call(1 + 2, x * 3)");
+        var call = Assert.IsType<MethodCallNode>(node);
+        Assert.Equal("Call", call.MethodName);
+        Assert.Equal(2, call.Arguments.Length);
+        Assert.IsType<BinaryOpNode>(call.Arguments[0]);
+        Assert.IsType<BinaryOpNode>(call.Arguments[1]);
+    }
+
+    [Fact]
+    public void Parse_IndexWithExpression()
+    {
+        // arr[1 + 2]
+        var node = ExpressionParser.Parse("arr[1 + 2]");
+        var idx = Assert.IsType<IndexAccessNode>(node);
+        var bin = Assert.IsType<BinaryOpNode>(idx.Index);
+        Assert.Equal(BinaryOp.Add, bin.Op);
+    }
+
+    [Fact]
+    public void Parse_ChainedIndexAccess()
+    {
+        // arr[0][1]
+        var node = ExpressionParser.Parse("arr[0][1]");
+        var outer = Assert.IsType<IndexAccessNode>(node);
+        Assert.Equal(1, ((LiteralNode)outer.Index).Value);
+        var inner = Assert.IsType<IndexAccessNode>(outer.Object);
+        Assert.Equal(0, ((LiteralNode)inner.Index).Value);
+    }
+
+    [Fact]
+    public void Parse_CastWithExpression()
+    {
+        // (int)(a + b)
+        var node = ExpressionParser.Parse("(int)(a + b)");
+        var cast = Assert.IsType<CastNode>(node);
+        Assert.Equal("int", cast.TypeName);
+        Assert.IsType<BinaryOpNode>(cast.Operand);
+    }
+
+    [Fact]
+    public void Parse_CastDouble()
+    {
+        var node = ExpressionParser.Parse("(double)x");
+        var cast = Assert.IsType<CastNode>(node);
+        Assert.Equal("double", cast.TypeName);
+    }
+
+    [Fact]
+    public void Parse_NegativeDouble()
+    {
+        var node = ExpressionParser.Parse("-3.14");
+        var lit = Assert.IsType<LiteralNode>(node);
+        Assert.Equal(-3.14, lit.Value);
+        Assert.Equal(LiteralKind.Double, lit.Kind);
+    }
+
+    // === Error cases ===
+
+    [Fact]
+    public void Parse_UnclosedParen_Throws()
+    {
+        Assert.Throws<FormatException>(() => ExpressionParser.Parse("(a + b"));
+    }
+
+    [Fact]
+    public void Parse_UnclosedBracket_Throws()
+    {
+        Assert.Throws<FormatException>(() => ExpressionParser.Parse("arr[0"));
+    }
+
+    [Fact]
+    public void Parse_TrailingOperator_Throws()
+    {
+        Assert.Throws<FormatException>(() => ExpressionParser.Parse("a +"));
+    }
+
+    [Fact]
+    public void Parse_DoubleOperator_Throws()
+    {
+        Assert.Throws<FormatException>(() => ExpressionParser.Parse("a ++ b"));
+    }
+
+    [Fact]
+    public void Parse_TrailingDot_Throws()
+    {
+        Assert.Throws<FormatException>(() => ExpressionParser.Parse("obj."));
+    }
+
+    [Fact]
+    public void Parse_TrailingComma_Throws()
+    {
+        Assert.Throws<FormatException>(() => ExpressionParser.Parse("a.Method(1,)"));
+    }
+
+    [Fact]
+    public void Parse_OnlyWhitespace_Throws()
+    {
+        Assert.Throws<FormatException>(() => ExpressionParser.Parse("   "));
+    }
+
+    [Fact]
+    public void Parse_ExtraTokensAfterExpression_Throws()
+    {
+        Assert.Throws<FormatException>(() => ExpressionParser.Parse("a b"));
+    }
+
+    [Fact]
+    public void Parse_InvalidCharacter_Throws()
+    {
+        Assert.Throws<FormatException>(() => ExpressionParser.Parse("a # b"));
+    }
+
+    [Fact]
+    public void Parse_ZeroLiteral()
+    {
+        var node = ExpressionParser.Parse("0");
+        var lit = Assert.IsType<LiteralNode>(node);
+        Assert.Equal(0, lit.Value);
+    }
+
+    [Fact]
+    public void Parse_LargeNumber()
+    {
+        var node = ExpressionParser.Parse("2147483647");  // int.MaxValue
+        var lit = Assert.IsType<LiteralNode>(node);
+        Assert.Equal(2147483647, lit.Value);
+    }
+
+    [Fact]
+    public void Parse_ThisKeyword()
+    {
+        // "this" should parse as a name, not a keyword
+        var node = ExpressionParser.Parse("this");
+        Assert.IsType<NameNode>(node);
+        Assert.Equal("this", ((NameNode)node).Name);
+    }
+
+    [Fact]
+    public void Parse_ThisDotMember()
+    {
+        var node = ExpressionParser.Parse("this.Name");
+        var member = Assert.IsType<MemberAccessNode>(node);
+        Assert.Equal("Name", member.MemberName);
+        Assert.Equal("this", ((NameNode)member.Object).Name);
+    }
 }

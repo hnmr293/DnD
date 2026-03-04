@@ -103,6 +103,89 @@ describe("Blocking execution pattern (stub mode)", () => {
     }
   });
 
+  it("stepOut should block until stopped", async () => {
+    client = new DebuggerClient(HOST_PATH, ["--stub"]);
+    await client.start();
+    await client.launch({ program: "test.dll" });
+
+    const waitPromise = waitForStopOrExit(client);
+    await client.stepOut({});
+    const event = await waitPromise;
+
+    expect(event.type).toBe("stopped");
+    if (event.type === "stopped") {
+      expect(event.params.reason).toBe("step");
+    }
+  });
+
+  it("continue after stopped should produce another stopped", async () => {
+    client = new DebuggerClient(HOST_PATH, ["--stub"]);
+    await client.start();
+    await client.launch({ program: "test.dll" });
+
+    // First continue
+    const wait1 = waitForStopOrExit(client);
+    await client.continue({});
+    const event1 = await wait1;
+    expect(event1.type).toBe("stopped");
+
+    // Second continue
+    const wait2 = waitForStopOrExit(client);
+    await client.continue({});
+    const event2 = await wait2;
+    expect(event2.type).toBe("stopped");
+  });
+
+  it("step sequence: stepOver then stepIn", async () => {
+    client = new DebuggerClient(HOST_PATH, ["--stub"]);
+    await client.start();
+    await client.launch({ program: "test.dll" });
+
+    const wait1 = waitForStopOrExit(client);
+    await client.stepOver({});
+    const event1 = await wait1;
+    expect(event1.type).toBe("stopped");
+
+    const wait2 = waitForStopOrExit(client);
+    await client.stepIn({});
+    const event2 = await wait2;
+    expect(event2.type).toBe("stopped");
+  });
+
+  it("full session: launch, step, inspect, terminate", async () => {
+    client = new DebuggerClient(HOST_PATH, ["--stub"]);
+    await client.start();
+    await client.launch({ program: "test.dll" });
+
+    // Set breakpoint
+    const bp = await client.setBreakpoint({ file: "Program.cs", line: 5 });
+    expect(bp.breakpoint.verified).toBe(true);
+
+    // Continue until stopped
+    const wait1 = waitForStopOrExit(client);
+    await client.continue({});
+    const event1 = await wait1;
+    expect(event1.type).toBe("stopped");
+
+    if (event1.type === "stopped") {
+      // Inspect state
+      const stack = await client.getStackTrace({ threadId: event1.params.threadId });
+      expect(stack.stackFrames.length).toBeGreaterThan(0);
+
+      const vars = await client.getVariables({ variablesReference: 0 });
+      expect(vars.variables.length).toBeGreaterThan(0);
+
+      const evalResult = await client.evaluate({ expression: "x + 1" });
+      expect(evalResult.result).toBeDefined();
+    }
+
+    // Terminate
+    const waitExit = waitForStopOrExit(client);
+    await client.terminate();
+    const exitEvent = await waitExit;
+    expect(exitEvent.type).toBe("exited");
+  });
+
   it("terminate should produce exited event", async () => {
     client = new DebuggerClient(HOST_PATH, ["--stub"]);
     await client.start();
