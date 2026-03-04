@@ -4,6 +4,13 @@
     <ProjectReference Include="..\DnD.Protocol\DnD.Protocol.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="ClrDebug" Version="0.3.4" />
+    <PackageReference Include="Microsoft.Diagnostics.DbgShim.win-x64" Version="9.0.661903" />
+    <PackageReference Include="StreamJsonRpc" Version="2.24.84" />
+    <PackageReference Include="System.Reflection.Metadata" Version="10.0.3" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
