@@ -18,17 +18,13 @@ public class SimpleEvaluator
                 throw new LocalRpcException("Empty expression")
                 { ErrorCode = ErrorCodes.EvaluationFailed };
 
-            var value = ResolveFirstSegment(segments[0], frame, reader);
-            if (value == null)
-                throw new LocalRpcException($"Variable '{segments[0]}' not found")
+            var value = ResolveFirstSegment(segments[0], frame, reader)
+                ?? throw new LocalRpcException($"Variable '{segments[0]}' not found")
                 { ErrorCode = ErrorCodes.EvaluationFailed };
-
             for (int i = 1; i < segments.Count; i++)
             {
-                value = NavigateSegment(value, segments[i]);
-                if (value == null)
-                    throw new LocalRpcException($"Cannot resolve '{string.Join(".", segments.Take(i + 1))}'")
-                    { ErrorCode = ErrorCodes.EvaluationFailed };
+                value = NavigateSegment(value, segments[i]) ?? throw new LocalRpcException($"Cannot resolve '{string.Join(".", segments.Take(i + 1))}'")
+                { ErrorCode = ErrorCodes.EvaluationFailed };
             }
 
             var valueReader = new ValueReader();

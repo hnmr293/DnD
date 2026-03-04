@@ -1,0 +1,46 @@
+# EditorConfig is awesome: https://EditorConfig.org
+#
+# このファイルはIDEルール（IDE****）のseverity設定を管理します。
+# CAルール（CA****）の設定はDirectory.Build.propsで管理されます。
+
+# top-most EditorConfig file
+root = true
+
+# All files
+[*]
+charset = utf-8
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# C# files
+[*.cs]
+
+# IDE0055: フォーマット統一
+dotnet_diagnostic.IDE0055.severity = error
+
+# IDE0071: 補間の簡素化
+dotnet_diagnostic.IDE0071.severity = error
+
+# IDE0090: new式の簡素化
+dotnet_diagnostic.IDE0090.severity = error
+
+# IDE0041: is null使用推奨
+dotnet_diagnostic.IDE0041.severity = error
+
+# IDE0270: is not null使用推奨
+dotnet_diagnostic.IDE0270.severity = error
+
+# IDE0019: パターンマッチングを使用（as + null check → is pattern）
+dotnet_diagnostic.IDE0019.severity = error
+
+# IDE0083: パターンマッチングを使用（not pattern）
+dotnet_diagnostic.IDE0083.severity = error
+
+# IDE0260: パターンマッチングを使用（switch expression）
+dotnet_diagnostic.IDE0260.severity = error
+
+# コードスタイル設定
+#csharp_prefer_braces = true:error
+csharp_new_line_before_open_brace = all
+csharp_indent_case_contents = true
+csharp_indent_switch_labels = true

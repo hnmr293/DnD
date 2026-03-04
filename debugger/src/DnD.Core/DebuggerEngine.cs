@@ -117,10 +117,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     {
         EnsureState(DebuggerState.Stopped);
         var thread = GetThread(request.ThreadId);
-        var frame = thread.ActiveFrame as CorDebugILFrame;
-        if (frame == null)
-            throw new InvalidOperationException("No IL frame available for stepping.");
-
+        var frame = thread.ActiveFrame as CorDebugILFrame ?? throw new InvalidOperationException("No IL frame available for stepping.");
         var stepper = thread.CreateStepper();
         stepper.SetInterceptMask(CorDebugIntercept.INTERCEPT_NONE);
         stepper.SetUnmappedStopMask(CorDebugUnmappedStop.STOP_NONE);
@@ -141,10 +138,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     {
         EnsureState(DebuggerState.Stopped);
         var thread = GetThread(request.ThreadId);
-        var frame = thread.ActiveFrame as CorDebugILFrame;
-        if (frame == null)
-            throw new InvalidOperationException("No IL frame available for stepping.");
-
+        var frame = thread.ActiveFrame as CorDebugILFrame ?? throw new InvalidOperationException("No IL frame available for stepping.");
         var stepper = thread.CreateStepper();
         stepper.SetInterceptMask(CorDebugIntercept.INTERCEPT_NONE);
         stepper.SetUnmappedStopMask(CorDebugUnmappedStop.STOP_NONE);
@@ -287,14 +281,10 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     {
         EnsureState(DebuggerState.Stopped);
 
-        var frame = request.FrameId.HasValue && _frameMap.TryGetValue(request.FrameId.Value, out var f)
+        var frame = (request.FrameId.HasValue && _frameMap.TryGetValue(request.FrameId.Value, out var f)
             ? f
-            : _frameMap.GetValueOrDefault(0);
-
-        if (frame == null)
-            throw new LocalRpcException("No frame available for evaluation")
+            : _frameMap.GetValueOrDefault(0)) ?? throw new LocalRpcException("No frame available for evaluation")
             { ErrorCode = ErrorCodes.EvaluationFailed };
-
         var module = frame.Function.Module;
         var reader = GetSymbolReader(module);
 
