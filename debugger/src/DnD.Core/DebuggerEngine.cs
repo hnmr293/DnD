@@ -1,0 +1,527 @@
+namespace DnD.Core;
+
+using ClrDebug;
+using DnD.Core.Callbacks;
+using DnD.Core.Runtime;
+using DnD.Protocol;
+using StreamJsonRpc;
+
+public class DebuggerEngine : IDebuggerEngine, IDisposable
+{
+    private DebuggerState _state = DebuggerState.NotStarted;
+    private CorDebug? _corDebug;
+    private CorDebugProcess? _process;
+    private ManagedCallbackHandler? _callbackHandler;
+    private readonly IProcessLauncher _launcher;
+
+    private CorDebugThread? _stoppedThread;
+    private readonly object _lock = new();
+
+    private readonly Dictionary<int, CorDebugILFrame> _frameMap = new();
+    private int _nextFrameId;
+
+    private readonly Dictionary<string, (CorDebugModule Module, Symbols.ISymbolReader? Reader)> _modules = new();
+    private readonly BreakpointManager _breakpointManager;
+    private readonly Inspection.VariableStore _variableStore = new();
+
+    public event EventHandler<StoppedEventArgs>? Stopped;
+    public event EventHandler<ExitedEventArgs>? Exited;
+    public event EventHandler<OutputEventArgs>? Output;
+
+    public DebuggerEngine(IProcessLauncher launcher)
+    {
+        _launcher = launcher;
+        _breakpointManager = new BreakpointManager(_modules);
+    }
+
+    public Task<LaunchResponse> LaunchAsync(LaunchRequest request)
+    {
+        EnsureState(DebuggerState.NotStarted);
+
+        _callbackHandler = new ManagedCallbackHandler();
+        WireCallbackEvents();
+
+        var result = _launcher.Launch(
+            request.Program, request.Args, request.Cwd, request.Env,
+            _callbackHandler.Callback);
+
+        _corDebug = result.CorDebug;
+        _process = result.Process;
+        _state = DebuggerState.Running;
+
+        return Task.FromResult(new LaunchResponse(ProcessId: _process.Id));
+    }
+
+    public Task<AttachResponse> AttachAsync(AttachRequest request)
+    {
+        EnsureState(DebuggerState.NotStarted);
+
+        _callbackHandler = new ManagedCallbackHandler();
+        WireCallbackEvents();
+
+        var result = _launcher.Attach(request.ProcessId, _callbackHandler.Callback);
+
+        _corDebug = result.CorDebug;
+        _process = result.Process;
+        _state = DebuggerState.Running;
+
+        return Task.FromResult(new AttachResponse(ProcessId: _process.Id));
+    }
+
+    public Task DetachAsync()
+    {
+        if (_state == DebuggerState.Terminated || _state == DebuggerState.NotStarted)
+            return Task.CompletedTask;
+
+        try { _process?.Detach(); }
+        catch { }
+
+        _state = DebuggerState.Terminated;
+        return Task.CompletedTask;
+    }
+
+    public Task TerminateAsync()
+    {
+        if (_state == DebuggerState.Terminated)
+            return Task.CompletedTask;
+
+        if (_state == DebuggerState.NotStarted)
+        {
+            Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(ExitCode: 0)));
+            _state = DebuggerState.Terminated;
+            return Task.CompletedTask;
+        }
+
+        try
+        {
+            _process?.Stop(5000);
+            _process?.Terminate(0);
+        }
+        catch { }
+
+        _state = DebuggerState.Terminated;
+        Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(ExitCode: 0)));
+        return Task.CompletedTask;
+    }
+
+    public Task ContinueAsync(ContinueRequest request)
+    {
+        EnsureState(DebuggerState.Stopped);
+        ClearStopState();
+        _state = DebuggerState.Running;
+        _process!.Continue(false);
+        return Task.CompletedTask;
+    }
+
+    public Task StepInAsync(StepInRequest request)
+    {
+        EnsureState(DebuggerState.Stopped);
+        var thread = GetThread(request.ThreadId);
+        var frame = thread.ActiveFrame as CorDebugILFrame;
+        if (frame == null)
+            throw new InvalidOperationException("No IL frame available for stepping.");
+
+        var stepper = thread.CreateStepper();
+        stepper.SetInterceptMask(CorDebugIntercept.INTERCEPT_NONE);
+        stepper.SetUnmappedStopMask(CorDebugUnmappedStop.STOP_NONE);
+
+        var ranges = GetStepRanges(frame);
+        if (ranges.Length > 0)
+            stepper.StepRange(true, ranges, ranges.Length);
+        else
+            stepper.Step(true);
+
+        ClearStopState();
+        _state = DebuggerState.Running;
+        _process!.Continue(false);
+        return Task.CompletedTask;
+    }
+
+    public Task StepOverAsync(StepOverRequest request)
+    {
+        EnsureState(DebuggerState.Stopped);
+        var thread = GetThread(request.ThreadId);
+        var frame = thread.ActiveFrame as CorDebugILFrame;
+        if (frame == null)
+            throw new InvalidOperationException("No IL frame available for stepping.");
+
+        var stepper = thread.CreateStepper();
+        stepper.SetInterceptMask(CorDebugIntercept.INTERCEPT_NONE);
+        stepper.SetUnmappedStopMask(CorDebugUnmappedStop.STOP_NONE);
+
+        var ranges = GetStepRanges(frame);
+        if (ranges.Length > 0)
+            stepper.StepRange(false, ranges, ranges.Length);
+        else
+            stepper.Step(false);
+
+        ClearStopState();
+        _state = DebuggerState.Running;
+        _process!.Continue(false);
+        return Task.CompletedTask;
+    }
+
+    public Task StepOutAsync(StepOutRequest request)
+    {
+        EnsureState(DebuggerState.Stopped);
+        var thread = GetThread(request.ThreadId);
+
+        var stepper = thread.CreateStepper();
+        stepper.SetInterceptMask(CorDebugIntercept.INTERCEPT_NONE);
+        stepper.SetUnmappedStopMask(CorDebugUnmappedStop.STOP_NONE);
+        stepper.StepOut();
+
+        ClearStopState();
+        _state = DebuggerState.Running;
+        _process!.Continue(false);
+        return Task.CompletedTask;
+    }
+
+    public Task<SetBreakpointResponse> SetBreakpointAsync(SetBreakpointRequest request)
+    {
+        EnsureNotTerminatedForBreakpoints();
+        return Task.FromResult(_breakpointManager.SetBreakpoint(request.File, request.Line));
+    }
+
+    public Task RemoveBreakpointAsync(RemoveBreakpointRequest request)
+    {
+        EnsureNotTerminatedForBreakpoints();
+        _breakpointManager.RemoveBreakpoint(request.BreakpointId);
+        return Task.CompletedTask;
+    }
+
+    public Task<GetBreakpointsResponse> GetBreakpointsAsync()
+    {
+        EnsureNotTerminatedForBreakpoints();
+        return Task.FromResult(_breakpointManager.GetBreakpoints());
+    }
+
+    public Task<GetStackTraceResponse> GetStackTraceAsync(GetStackTraceRequest request)
+    {
+        EnsureState(DebuggerState.Stopped);
+        var thread = GetThread(request.ThreadId);
+        var frames = new List<Protocol.StackFrame>();
+
+        _frameMap.Clear();
+        _nextFrameId = 0;
+
+        foreach (var chain in thread.EnumerateChains())
+        {
+            if (!chain.IsManaged) continue;
+
+            foreach (var frame in chain.EnumerateFrames())
+            {
+                if (frame is not CorDebugILFrame ilFrame) continue;
+
+                var function = ilFrame.Function;
+                var module = function.Module;
+
+                string? file = null;
+                int? line = null;
+                int? column = null;
+                int ilOffset = 0;
+
+                try
+                {
+                    var ipResult = ilFrame.IP;
+                    ilOffset = (int)ipResult.pnOffset;
+
+                    var reader = GetSymbolReader(module);
+                    if (reader != null)
+                    {
+                        var sp = reader.ResolveSourceLocation((int)function.Token, ilOffset);
+                        if (sp != null)
+                        {
+                            file = sp.FilePath;
+                            line = sp.StartLine;
+                            column = sp.StartColumn;
+                        }
+                    }
+                }
+                catch { }
+
+                var name = GetMethodName(module, (int)function.Token);
+                var frameId = _nextFrameId++;
+                _frameMap[frameId] = ilFrame;
+
+                frames.Add(new Protocol.StackFrame(
+                    Id: frameId,
+                    Name: name,
+                    File: file,
+                    Line: line,
+                    Column: column,
+                    ModuleId: module.Name));
+            }
+        }
+
+        return Task.FromResult(new GetStackTraceResponse(frames.ToArray()));
+    }
+
+    public Task<GetVariablesResponse> GetVariablesAsync(GetVariablesRequest request)
+    {
+        EnsureState(DebuggerState.Stopped);
+
+        var variables = new List<Variable>();
+        var valueReader = new Inspection.ValueReader();
+
+        if (request.VariablesReference == 0)
+        {
+            if (_frameMap.TryGetValue(0, out var topFrame))
+                variables.AddRange(GetFrameVariables(topFrame, valueReader));
+        }
+        else if (_frameMap.TryGetValue(request.VariablesReference - 1000000, out var frame))
+        {
+            variables.AddRange(GetFrameVariables(frame, valueReader));
+        }
+        else
+        {
+            var parentValue = _variableStore.Get(request.VariablesReference);
+            if (parentValue != null)
+                variables.AddRange(valueReader.ExpandChildren(parentValue, _variableStore));
+        }
+
+        return Task.FromResult(new GetVariablesResponse(variables.ToArray()));
+    }
+
+    public Task<EvaluateResponse> EvaluateAsync(EvaluateRequest request)
+    {
+        EnsureState(DebuggerState.Stopped);
+
+        var frame = request.FrameId.HasValue && _frameMap.TryGetValue(request.FrameId.Value, out var f)
+            ? f
+            : _frameMap.GetValueOrDefault(0);
+
+        if (frame == null)
+            throw new LocalRpcException("No frame available for evaluation")
+            { ErrorCode = ErrorCodes.EvaluationFailed };
+
+        var module = frame.Function.Module;
+        var reader = GetSymbolReader(module);
+
+        var evaluator = new Inspection.SimpleEvaluator();
+        return Task.FromResult(evaluator.Evaluate(
+            request.Expression, frame, reader, _variableStore));
+    }
+
+    private void WireCallbackEvents()
+    {
+        _callbackHandler!.OnStopped += (thread, reason, description) =>
+        {
+            lock (_lock)
+            {
+                _stoppedThread = thread;
+                _state = DebuggerState.Stopped;
+                _variableStore.Clear();
+                _frameMap.Clear();
+                _nextFrameId = 0;
+            }
+
+            var threadId = 0;
+            try { threadId = thread?.Id ?? 0; }
+            catch { }
+
+            Stopped?.Invoke(this, new StoppedEventArgs(
+                new StoppedNotification(reason, threadId, description)));
+        };
+
+        _callbackHandler.OnProcessExited += (exitCode) =>
+        {
+            lock (_lock) { _state = DebuggerState.Terminated; }
+            Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(exitCode)));
+        };
+
+        _callbackHandler.OnModuleLoaded += (module) =>
+        {
+            var moduleName = module.Name;
+            if (string.IsNullOrEmpty(moduleName)) return;
+
+            var reader = Symbols.SymbolReaderFactory.Create(moduleName);
+            _modules[moduleName] = (module, reader);
+            _breakpointManager?.OnModuleLoaded(moduleName, module, reader);
+        };
+    }
+
+    private CorDebugThread GetThread(int? threadId)
+    {
+        if (threadId.HasValue && _process != null)
+        {
+            try { return _process.GetThread(threadId.Value); }
+            catch { }
+        }
+        return _stoppedThread ?? throw new InvalidOperationException("No thread available.");
+    }
+
+    private COR_DEBUG_STEP_RANGE[] GetStepRanges(CorDebugILFrame frame)
+    {
+        try
+        {
+            var ipResult = frame.IP;
+            var ilOffset = (int)ipResult.pnOffset;
+
+            var function = frame.Function;
+            var module = function.Module;
+            var reader = GetSymbolReader(module);
+            if (reader == null) return [];
+
+            var sequencePoints = reader.GetSequencePoints((int)function.Token);
+            if (sequencePoints.Count == 0) return [];
+
+            for (int i = 0; i < sequencePoints.Count; i++)
+            {
+                var sp = sequencePoints[i];
+                var nextOffset = i + 1 < sequencePoints.Count
+                    ? sequencePoints[i + 1].ILOffset
+                    : sp.ILOffset + 1;
+
+                if (ilOffset >= sp.ILOffset && ilOffset < nextOffset)
+                {
+                    return [new COR_DEBUG_STEP_RANGE
+                    {
+                        startOffset = sp.ILOffset,
+                        endOffset = nextOffset
+                    }];
+                }
+            }
+        }
+        catch { }
+
+        return [];
+    }
+
+    private Symbols.ISymbolReader? GetSymbolReader(CorDebugModule module)
+    {
+        var name = module.Name;
+        if (string.IsNullOrEmpty(name)) return null;
+        return _modules.TryGetValue(name, out var entry) ? entry.Reader : null;
+    }
+
+    private string GetMethodName(CorDebugModule module, int methodToken)
+    {
+        try
+        {
+            var import = module.GetMetaDataInterface<MetaDataImport>();
+            var methodProps = import.GetMethodProps((mdMethodDef)methodToken);
+            var typeName = "";
+            try
+            {
+                var typeProps = import.GetTypeDefProps(methodProps.pClass);
+                typeName = typeProps.szTypeDef + ".";
+            }
+            catch { }
+            return typeName + methodProps.szMethod;
+        }
+        catch
+        {
+            return $"<unknown>@0x{methodToken:X}";
+        }
+    }
+
+    private List<Variable> GetFrameVariables(CorDebugILFrame frame, Inspection.ValueReader valueReader)
+    {
+        var variables = new List<Variable>();
+        var module = frame.Function.Module;
+        var reader = GetSymbolReader(module);
+
+        int ilOffset;
+        try
+        {
+            var ipResult = frame.IP;
+            ilOffset = (int)ipResult.pnOffset;
+        }
+        catch { return variables; }
+
+        IReadOnlyList<Symbols.LocalVariableInfo>? localInfos = null;
+        if (reader != null)
+            localInfos = reader.GetLocalVariables((int)frame.Function.Token, ilOffset);
+
+        if (localInfos != null)
+        {
+            foreach (var localInfo in localInfos)
+            {
+                try
+                {
+                    var value = frame.GetLocalVariable(localInfo.SlotIndex);
+                    var (displayValue, type, varRef) = valueReader.Read(value, _variableStore);
+                    variables.Add(new Variable(localInfo.Name, displayValue, varRef, type));
+                }
+                catch { }
+            }
+        }
+
+        try
+        {
+            for (int i = 0; ; i++)
+            {
+                try
+                {
+                    var value = frame.GetArgument(i);
+                    var (displayValue, type, varRef) = valueReader.Read(value, _variableStore);
+                    variables.Add(new Variable($"arg{i}", displayValue, varRef, type));
+                }
+                catch { break; }
+            }
+        }
+        catch { }
+
+        return variables;
+    }
+
+    private void EnsureState(DebuggerState expectedState)
+    {
+        if (_state != expectedState)
+        {
+            var errorCode = _state switch
+            {
+                DebuggerState.NotStarted => ErrorCodes.NotAttached,
+                DebuggerState.Running => expectedState == DebuggerState.Stopped
+                    ? ErrorCodes.ProcessNotStopped : ErrorCodes.ProcessRunning,
+                DebuggerState.Stopped => ErrorCodes.ProcessRunning,
+                DebuggerState.Terminated => ErrorCodes.NotAttached,
+                _ => ErrorCodes.NotAttached
+            };
+            throw new LocalRpcException($"Invalid state: expected {expectedState}, got {_state}")
+            { ErrorCode = errorCode };
+        }
+    }
+
+    private void EnsureNotTerminated()
+    {
+        if (_state == DebuggerState.Terminated)
+            throw new LocalRpcException("Process has terminated") { ErrorCode = ErrorCodes.NotAttached };
+        if (_state == DebuggerState.NotStarted)
+            throw new LocalRpcException("No process attached") { ErrorCode = ErrorCodes.NotAttached };
+    }
+
+    private void EnsureNotTerminatedForBreakpoints()
+    {
+        if (_state == DebuggerState.Terminated)
+            throw new LocalRpcException("Process has terminated") { ErrorCode = ErrorCodes.NotAttached };
+    }
+
+    private void ClearStopState()
+    {
+        _variableStore.Clear();
+        _frameMap.Clear();
+        _nextFrameId = 0;
+    }
+
+    public void Dispose()
+    {
+        try
+        {
+            if (_state != DebuggerState.Terminated && _state != DebuggerState.NotStarted)
+            {
+                _process?.Stop(1000);
+                _process?.Terminate(0);
+            }
+        }
+        catch { }
+
+        foreach (var (_, (_, reader)) in _modules)
+            reader?.Dispose();
+        _modules.Clear();
+
+        try { _corDebug?.Terminate(); }
+        catch { }
+    }
+}
