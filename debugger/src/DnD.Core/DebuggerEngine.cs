@@ -23,6 +23,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     private readonly Dictionary<string, (CorDebugModule Module, Symbols.ISymbolReader? Reader)> _modules = new();
     private readonly BreakpointManager _breakpointManager;
     private readonly Inspection.VariableStore _variableStore = new();
+    private TaskCompletionSource<(CorDebugEval Eval, bool Success)>? _evalTcs;
 
     public event EventHandler<StoppedEventArgs>? Stopped;
     public event EventHandler<ExitedEventArgs>? Exited;
@@ -277,7 +278,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         return Task.FromResult(new GetVariablesResponse(variables.ToArray()));
     }
 
-    public Task<EvaluateResponse> EvaluateAsync(EvaluateRequest request)
+    public async Task<EvaluateResponse> EvaluateAsync(EvaluateRequest request)
     {
         EnsureState(DebuggerState.Stopped);
 
@@ -288,9 +289,69 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         var module = frame.Function.Module;
         var reader = GetSymbolReader(module);
 
-        var evaluator = new Inspection.SimpleEvaluator();
-        return Task.FromResult(evaluator.Evaluate(
-            request.Expression, frame, reader, _variableStore));
+        // Try SimpleEvaluator first (fast path: variable names and field access)
+        try
+        {
+            var evaluator = new Inspection.SimpleEvaluator();
+            return evaluator.Evaluate(request.Expression, frame, reader, _variableStore);
+        }
+        catch (LocalRpcException) when (_stoppedThread != null)
+        {
+            // SimpleEvaluator failed — try FuncEvalEvaluator for property/method/arithmetic
+        }
+
+        // Parse expression AST and evaluate with func-eval
+        try
+        {
+            var ast = Inspection.ExpressionParser.Parse(request.Expression);
+            var thread = _stoppedThread ?? throw new LocalRpcException("No thread available for evaluation")
+                { ErrorCode = ErrorCodes.EvaluationFailed };
+            var funcEval = new Inspection.FuncEvalEvaluator(this, thread, frame, reader, _variableStore);
+            return await funcEval.EvaluateAsync(ast);
+        }
+        catch (FormatException ex)
+        {
+            throw new LocalRpcException($"Invalid expression: {ex.Message}")
+            { ErrorCode = ErrorCodes.EvaluationFailed };
+        }
+    }
+
+    /// <summary>
+    /// Executes a func-eval on the debuggee by calling ICorDebugEval methods,
+    /// then waits for the EvalComplete/EvalException callback.
+    /// </summary>
+    public async Task<CorDebugValue> ExecuteEvalAsync(
+        Action<CorDebugEval> setup, CorDebugThread thread, TimeSpan? timeout = null)
+    {
+        var actualTimeout = timeout ?? TimeSpan.FromSeconds(5);
+
+        var eval = thread.CreateEval();
+        _evalTcs = new TaskCompletionSource<(CorDebugEval, bool)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        setup(eval);
+        _process!.Continue(false);
+
+        using var cts = new CancellationTokenSource(actualTimeout);
+        await using var registration = cts.Token.Register(() =>
+        {
+            try { eval.Abort(); } catch { }
+            _evalTcs?.TrySetException(
+                new TimeoutException($"Func-eval timed out after {actualTimeout.TotalSeconds}s"));
+        });
+
+        var (resultEval, success) = await _evalTcs.Task;
+        _evalTcs = null;
+
+        if (!success)
+        {
+            // Resume process after failed eval
+            _process!.Continue(false);
+            throw new LocalRpcException("Func-eval threw an exception in the debuggee")
+            { ErrorCode = ErrorCodes.EvaluationFailed };
+        }
+
+        return resultEval.Result;
     }
 
     private void WireCallbackEvents()
@@ -328,6 +389,13 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
             var reader = Symbols.SymbolReaderFactory.Create(moduleName);
             _modules[moduleName] = (module, reader);
             _breakpointManager?.OnModuleLoaded(moduleName, module, reader);
+        };
+
+        _callbackHandler.OnEvalCompleted += (thread, eval, success) =>
+        {
+            // After eval completes, we're back in stopped state
+            lock (_lock) { _state = DebuggerState.Stopped; }
+            _evalTcs?.TrySetResult((eval, success));
         };
     }
 

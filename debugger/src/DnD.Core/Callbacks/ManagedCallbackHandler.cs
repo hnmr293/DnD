@@ -11,6 +11,7 @@ public class ManagedCallbackHandler
     public event Action<CorDebugThread, StopReason, string?>? OnStopped;
     public event Action<int>? OnProcessExited;
     public event Action<CorDebugModule>? OnModuleLoaded;
+    public event Action<CorDebugThread, CorDebugEval, bool>? OnEvalCompleted;
 
     public ManagedCallbackHandler()
     {
@@ -90,5 +91,17 @@ public class ManagedCallbackHandler
         _callback.OnUnloadAssembly += (s, e) => ContinueProcess();
         _callback.OnNameChange += (s, e) => ContinueProcess();
         _callback.OnLogMessage += (s, e) => ContinueProcess();
+
+        _callback.OnEvalComplete += (s, e) =>
+        {
+            // Do NOT continue — the evaluator needs to read the result first
+            OnEvalCompleted?.Invoke(e.Thread, e.Eval, true);
+        };
+
+        _callback.OnEvalException += (s, e) =>
+        {
+            // Do NOT continue — the evaluator needs to handle the error
+            OnEvalCompleted?.Invoke(e.Thread, e.Eval, false);
+        };
     }
 }
