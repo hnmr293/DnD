@@ -21,7 +21,7 @@ public class JsonRpcIntegrationTests : IAsyncLifetime
             StartInfo = new ProcessStartInfo
             {
                 FileName = "dotnet",
-                Arguments = $"run --project \"{hostProject}\" --no-build",
+                Arguments = $"run --project \"{hostProject}\" --no-build -- --stub",
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,

@@ -6,7 +6,10 @@ using StreamJsonRpc;
 
 Console.Error.WriteLine("DnD.Host starting...");
 
-var engine = new StubDebuggerEngine();
+var useStub = args.Contains("--stub");
+IDebuggerEngine engine = useStub
+    ? new StubDebuggerEngine()
+    : new DebuggerEngine(new DnD.Core.Runtime.AutoProcessLauncher());
 
 var formatter = new SystemTextJsonFormatter();
 formatter.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
@@ -35,3 +38,6 @@ Console.Error.WriteLine("DnD.Host listening on stdio...");
 await rpc.Completion;
 
 Console.Error.WriteLine("DnD.Host shutting down.");
+
+if (engine is IDisposable disposable)
+    disposable.Dispose();
