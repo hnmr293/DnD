@@ -122,9 +122,7 @@ public class DebugSessionTests : IAsyncLifetime
         await _rpc!.InvokeWithParameterObjectAsync<LaunchResponse>(
             "launch", new LaunchRequest(Program: program));
 
-        // Wait for exited notification or terminate fallback.
-        // The ExitProcess callback from ICorDebug may not always reach
-        // us reliably through the JSON-RPC pipeline.
+        // Wait for exited notification with a generous timeout as a safety net.
         try
         {
             var exited = await _exitedTcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -132,8 +130,7 @@ public class DebugSessionTests : IAsyncLifetime
         }
         catch (TimeoutException)
         {
-            // If no exited notification arrived, the process may still have exited.
-            // Try to terminate — if the connection is lost, the host already exited.
+            // Safety fallback — force terminate and check exit code.
             try
             {
                 await _rpc!.InvokeAsync("terminate");

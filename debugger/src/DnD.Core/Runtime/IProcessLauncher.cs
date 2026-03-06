@@ -2,7 +2,11 @@ namespace DnD.Core.Runtime;
 
 using ClrDebug;
 
-public record LaunchResult(CorDebug CorDebug, CorDebugProcess Process);
+public record LaunchResult(
+    CorDebug CorDebug,
+    CorDebugProcess Process,
+    Stream? StandardOutput = null,
+    Stream? StandardError = null);
 
 public interface IProcessLauncher
 {

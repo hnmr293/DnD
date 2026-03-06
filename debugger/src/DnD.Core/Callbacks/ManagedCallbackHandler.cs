@@ -68,6 +68,10 @@ public class ManagedCallbackHandler
         _callback.OnExitProcess += (s, e) =>
         {
             OnProcessExited?.Invoke(0);
+            // Continue is required after every ICorDebug callback — even ExitProcess.
+            // Without this, the callback thread stays blocked and subsequent calls
+            // (like ICorDebugProcess::Stop) can hang indefinitely.
+            ContinueProcess();
         };
 
         _callback.OnLoadModule += (s, e) =>

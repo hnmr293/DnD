@@ -43,6 +43,7 @@ export function registerProcessTools(server: McpServer, clientManager: ClientMan
     async () => {
       const client = clientManager.getClient();
       await client.detach();
+      await clientManager.dispose();
       return {
         content: [{ type: "text" as const, text: "Detached from process" }],
       };
@@ -55,6 +56,7 @@ export function registerProcessTools(server: McpServer, clientManager: ClientMan
     async () => {
       const client = clientManager.getClient();
       await client.terminate();
+      await clientManager.dispose();
       return {
         content: [{ type: "text" as const, text: "Process terminated" }],
       };

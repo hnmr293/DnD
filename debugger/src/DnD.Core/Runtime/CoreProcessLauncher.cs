@@ -1,5 +1,6 @@
 namespace DnD.Core.Runtime;
 
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using ClrDebug;
 
@@ -25,14 +26,14 @@ public class CoreProcessLauncher : IProcessLauncher
     {
         var commandLine = BuildCommandLine(program, args);
 
-        var launchResult = _dbgShim.CreateProcessForLaunch(
-            commandLine,
-            bSuspendProcess: true,
-            lpEnvironment: IntPtr.Zero,
-            lpCurrentDirectory: cwd);
+        // DbgShim's CreateProcessForLaunch calls Win32 CreateProcess which inherits
+        // the parent's std handles. When DnD.Host uses stdin/stdout for JSON-RPC,
+        // the debuggee's Console.WriteLine would corrupt the protocol stream.
+        // Redirect the child's stdout/stderr to anonymous pipes we can read from.
+        var (launchResultValue, stdoutRead, stderrRead) = CreateProcessWithCapturedOutput(commandLine, cwd);
 
-        var pid = launchResult.ProcessId;
-        var resumeHandle = launchResult.ResumeHandle;
+        var pid = launchResultValue.ProcessId;
+        var resumeHandle = launchResultValue.ResumeHandle;
 
         var tcs = new TaskCompletionSource<CorDebug>();
 
@@ -71,7 +72,7 @@ public class CoreProcessLauncher : IProcessLauncher
 
         var process = corDebug.DebugActiveProcess((int)pid, false);
 
-        return new LaunchResult(corDebug, process);
+        return new LaunchResult(corDebug, process, stdoutRead, stderrRead);
     }
 
     public LaunchResult Attach(
@@ -113,6 +114,7 @@ public class CoreProcessLauncher : IProcessLauncher
 
         var process = corDebug.DebugActiveProcess(processId, false);
 
+        // Attach can't capture output — the process already has its own handles
         return new LaunchResult(corDebug, process);
     }
 
@@ -146,6 +148,73 @@ public class CoreProcessLauncher : IProcessLauncher
         throw new FileNotFoundException(
             "Could not find dbgshim.dll. Ensure Microsoft.Diagnostics.DbgShim.win-x64 NuGet package is installed.");
     }
+
+    /// <summary>
+    /// Creates the debuggee process with stdout/stderr redirected to anonymous pipes.
+    /// Returns the pipe read-end streams so the caller can capture output.
+    /// Stdin is redirected to NUL (debuggees don't read interactive input during debugging).
+    /// </summary>
+    private (CreateProcessForLaunchResult Result, Stream StdoutRead, Stream StderrRead)
+        CreateProcessWithCapturedOutput(string commandLine, string? cwd)
+    {
+        const int STD_INPUT_HANDLE = -10;
+        const int STD_OUTPUT_HANDLE = -11;
+        const int STD_ERROR_HANDLE = -12;
+
+        var origStdin = GetStdHandle(STD_INPUT_HANDLE);
+        var origStdout = GetStdHandle(STD_OUTPUT_HANDLE);
+        var origStderr = GetStdHandle(STD_ERROR_HANDLE);
+
+        // AnonymousPipeServerStream(PipeDirection.In) creates:
+        //   server end = read (our side), client end = write (child side)
+        var stdoutPipe = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.Inheritable);
+        var stderrPipe = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.Inheritable);
+
+        // NUL for stdin
+        using var nulFile = File.OpenHandle("NUL", FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        var nulHandle = nulFile.DangerousGetHandle();
+
+        try
+        {
+            // Replace std handles so the child inherits our pipe write-ends
+            SetStdHandle(STD_INPUT_HANDLE, nulHandle);
+            SetStdHandle(STD_OUTPUT_HANDLE, stdoutPipe.ClientSafePipeHandle.DangerousGetHandle());
+            SetStdHandle(STD_ERROR_HANDLE, stderrPipe.ClientSafePipeHandle.DangerousGetHandle());
+
+            var result = _dbgShim.CreateProcessForLaunch(
+                commandLine,
+                bSuspendProcess: true,
+                lpEnvironment: IntPtr.Zero,
+                lpCurrentDirectory: cwd);
+
+            // Return the server (read) ends — these are the streams we'll read from
+            return (result, stdoutPipe, stderrPipe);
+        }
+        catch
+        {
+            stdoutPipe.Dispose();
+            stderrPipe.Dispose();
+            throw;
+        }
+        finally
+        {
+            // Restore original handles for DnD.Host's own stdio
+            SetStdHandle(STD_INPUT_HANDLE, origStdin);
+            SetStdHandle(STD_OUTPUT_HANDLE, origStdout);
+            SetStdHandle(STD_ERROR_HANDLE, origStderr);
+
+            // Close the write-end handles in our process — only the child holds them now.
+            // This ensures ReadLine() on the server end will return null when the child exits.
+            stdoutPipe.DisposeLocalCopyOfClientHandle();
+            stderrPipe.DisposeLocalCopyOfClientHandle();
+        }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetStdHandle(int nStdHandle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetStdHandle(int nStdHandle, IntPtr hHandle);
 
     private static string BuildCommandLine(string program, string[]? args)
     {

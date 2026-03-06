@@ -50,6 +50,12 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         _process = result.Process;
         _state = DebuggerState.Running;
 
+        // Start reading debuggee's stdout/stderr on background threads
+        if (result.StandardOutput != null)
+            StartOutputReader(result.StandardOutput, OutputCategory.Stdout);
+        if (result.StandardError != null)
+            StartOutputReader(result.StandardError, OutputCategory.Stderr);
+
         return Task.FromResult(new LaunchResponse(ProcessId: _process.Id));
     }
 
@@ -81,28 +87,48 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         return Task.CompletedTask;
     }
 
-    public Task TerminateAsync()
+    public async Task TerminateAsync()
     {
         if (_state == DebuggerState.Terminated)
-            return Task.CompletedTask;
+            return;
 
         if (_state == DebuggerState.NotStarted)
         {
             Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(ExitCode: 0)));
             _state = DebuggerState.Terminated;
-            return Task.CompletedTask;
+            return;
         }
 
-        try
+        // Safety net: if the process has already exited, skip Stop/Terminate
+        // which can block on a dead ICorDebug process object.
+        var processAlive = IsProcessAlive();
+
+        if (processAlive && _process != null)
         {
-            _process?.Stop(5000);
-            _process?.Terminate(0);
+            try
+            {
+                await Task.Run(() =>
+                {
+                    _process.Stop(3000);
+                    _process.Terminate(0);
+                }).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch { }
         }
-        catch { }
 
         _state = DebuggerState.Terminated;
         Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(ExitCode: 0)));
-        return Task.CompletedTask;
+    }
+
+    private bool IsProcessAlive()
+    {
+        if (_process == null) return false;
+        try
+        {
+            using var osProcess = System.Diagnostics.Process.GetProcessById(_process.Id);
+            return !osProcess.HasExited;
+        }
+        catch { return false; }
     }
 
     public Task ContinueAsync(ContinueRequest request)
@@ -305,7 +331,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         {
             var ast = Inspection.ExpressionParser.Parse(request.Expression);
             var thread = _stoppedThread ?? throw new LocalRpcException("No thread available for evaluation")
-                { ErrorCode = ErrorCodes.EvaluationFailed };
+            { ErrorCode = ErrorCodes.EvaluationFailed };
             var funcEval = new Inspection.FuncEvalEvaluator(this, thread, frame, reader, _variableStore);
             return await funcEval.EvaluateAsync(ast);
         }
@@ -561,6 +587,25 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         _variableStore.Clear();
         _frameMap.Clear();
         _nextFrameId = 0;
+    }
+
+    private void StartOutputReader(Stream stream, OutputCategory category)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var reader = new StreamReader(stream);
+                while (true)
+                {
+                    var line = await reader.ReadLineAsync();
+                    if (line == null) break; // stream closed
+                    Output?.Invoke(this, new OutputEventArgs(
+                        new OutputNotification(category, line)));
+                }
+            }
+            catch { }
+        });
     }
 
     public void Dispose()
