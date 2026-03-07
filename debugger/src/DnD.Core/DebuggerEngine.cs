@@ -1,5 +1,6 @@
 namespace DnD.Core;
 
+using System.Reflection.PortableExecutable;
 using ClrDebug;
 using DnD.Core.Callbacks;
 using DnD.Core.Runtime;
@@ -16,6 +17,9 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
 
     private CorDebugThread? _stoppedThread;
     private readonly object _lock = new();
+    private bool _stopAtEntry;
+    private string? _programPath;
+    private bool _exitedEventFired;
 
     private readonly Dictionary<int, CorDebugILFrame> _frameMap = new();
     private int _nextFrameId;
@@ -38,6 +42,9 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     public Task<LaunchResponse> LaunchAsync(LaunchRequest request)
     {
         EnsureState(DebuggerState.NotStarted);
+
+        _stopAtEntry = request.StopAtEntry;
+        _programPath = Path.GetFullPath(request.Program);
 
         _callbackHandler = new ManagedCallbackHandler();
         WireCallbackEvents();
@@ -90,12 +97,22 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     public async Task TerminateAsync()
     {
         if (_state == DebuggerState.Terminated)
+        {
+            // Ensure exited event is fired even if already terminated (e.g., callback already ran)
+            lock (_lock)
+            {
+                if (_exitedEventFired) return;
+                _exitedEventFired = true;
+            }
+            Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(ExitCode: 0)));
             return;
+        }
 
         if (_state == DebuggerState.NotStarted)
         {
-            Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(ExitCode: 0)));
             _state = DebuggerState.Terminated;
+            lock (_lock) { _exitedEventFired = true; }
+            Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(ExitCode: 0)));
             return;
         }
 
@@ -117,6 +134,11 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         }
 
         _state = DebuggerState.Terminated;
+        lock (_lock)
+        {
+            if (_exitedEventFired) return;
+            _exitedEventFired = true;
+        }
         Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(ExitCode: 0)));
     }
 
@@ -403,7 +425,12 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
 
         _callbackHandler.OnProcessExited += (exitCode) =>
         {
-            lock (_lock) { _state = DebuggerState.Terminated; }
+            lock (_lock)
+            {
+                _state = DebuggerState.Terminated;
+                if (_exitedEventFired) return;
+                _exitedEventFired = true;
+            }
             Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(exitCode)));
         };
 
@@ -415,6 +442,20 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
             var reader = Symbols.SymbolReaderFactory.Create(moduleName);
             _modules[moduleName] = (module, reader);
             _breakpointManager?.OnModuleLoaded(moduleName, module, reader);
+
+            // Handle stopAtEntry: set entry breakpoint when the target module loads
+            if (_stopAtEntry && _callbackHandler!.EntryBreakpoint == null && _programPath != null)
+            {
+                try
+                {
+                    var normalizedModule = Path.GetFullPath(moduleName);
+                    if (string.Equals(normalizedModule, _programPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        SetEntryPointBreakpoint(module);
+                    }
+                }
+                catch { }
+            }
         };
 
         _callbackHandler.OnEvalCompleted += (thread, eval, success) =>
@@ -587,6 +628,31 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         _variableStore.Clear();
         _frameMap.Clear();
         _nextFrameId = 0;
+    }
+
+    private void SetEntryPointBreakpoint(CorDebugModule module)
+    {
+        try
+        {
+            var modulePath = module.Name;
+
+            // Read the entry point token from the PE header
+            using var fs = File.OpenRead(modulePath);
+            using var peReader = new PEReader(fs);
+            var corHeader = peReader.PEHeaders.CorHeader;
+            if (corHeader == null) return;
+
+            var entryPointToken = corHeader.EntryPointTokenOrRelativeVirtualAddress;
+            if (entryPointToken == 0) return;
+
+            var function = module.GetFunctionFromToken((mdMethodDef)entryPointToken);
+            var code = function.ILCode;
+            var bp = code.CreateBreakpoint(0);
+            bp.Activate(true);
+
+            _callbackHandler!.EntryBreakpoint = bp;
+        }
+        catch { }
     }
 
     private void StartOutputReader(Stream stream, OutputCategory category)
