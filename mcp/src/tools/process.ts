@@ -1,12 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ClientManager } from "../client-manager.js";
-import { waitForStopOrExit, fetchContext, formatStoppedResponse, formatExitedResponse } from "./execution.js";
+import { waitForStopOrExit, formatStoppedResponse, formatExitedResponse } from "./execution.js";
 
 export function registerProcessTools(server: McpServer, clientManager: ClientManager) {
   server.tool(
     "launch",
-    "Launch a .NET program under the debugger. Returns the process ID. Must be called before any other debugging operation.",
+    "Launch a .NET program under the debugger. Must be called before any other debugging operation.",
     {
       program: z.string().describe("Path to the .NET executable or DLL to debug"),
       args: z.array(z.string()).optional().describe("Command-line arguments"),
@@ -21,9 +21,10 @@ export function registerProcessTools(server: McpServer, clientManager: ClientMan
       const event = await waitPromise;
 
       if (event.type === "stopped") {
-        const context = await fetchContext(client, event.params.threadId);
+        const { stackFrames } = await client.getStackTrace({ threadId: event.params.threadId });
+        const topFrame = stackFrames.length > 0 ? stackFrames[0] : null;
         return {
-          content: [{ type: "text" as const, text: formatStoppedResponse(event.params, context) }],
+          content: [{ type: "text" as const, text: formatStoppedResponse(event.params, topFrame) }],
         };
       }
 

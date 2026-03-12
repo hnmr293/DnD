@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ClientManager } from "../client-manager.js";
 import type { DebuggerClient } from "../debugger-client.js";
-import type { StoppedParams, ExitedParams, StackFrame, Variable } from "../types/protocol.js";
+import type { StoppedParams, ExitedParams, StackFrame } from "../types/protocol.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -47,47 +47,22 @@ export function waitForStopOrExit(client: DebuggerClient, timeoutMs = DEFAULT_TI
   });
 }
 
-interface StopContext {
-  stackFrames: StackFrame[];
-  variables: Variable[];
-}
-
-export async function fetchContext(client: DebuggerClient, threadId: number): Promise<StopContext> {
+async function fetchTopFrame(client: DebuggerClient, threadId: number): Promise<StackFrame | null> {
   try {
     const { stackFrames } = await client.getStackTrace({ threadId });
-    let variables: Variable[] = [];
-    if (stackFrames.length > 0) {
-      const result = await client.getVariables({ variablesReference: 0 });
-      variables = result.variables;
-    }
-    return { stackFrames, variables };
+    return stackFrames.length > 0 ? stackFrames[0] : null;
   } catch {
-    return { stackFrames: [], variables: [] };
+    return null;
   }
 }
 
-export function formatStoppedResponse(params: StoppedParams, context: StopContext): string {
-  const lines: string[] = [];
-  lines.push(`Stopped: ${params.reason}${params.description ? ` — ${params.description}` : ""} (thread ${params.threadId})`);
-
-  if (context.stackFrames.length > 0) {
-    lines.push("");
-    lines.push("Stack trace:");
-    for (const frame of context.stackFrames) {
-      const loc = frame.file ? ` at ${frame.file}:${frame.line ?? "?"}` : "";
-      lines.push(`  #${frame.id} ${frame.name}${loc}`);
-    }
+export function formatStoppedResponse(params: StoppedParams, topFrame: StackFrame | null): string {
+  let text = `Stopped: ${params.reason}${params.description ? ` — ${params.description}` : ""} (thread ${params.threadId})`;
+  if (topFrame) {
+    const loc = topFrame.file ? ` (${topFrame.file}:${topFrame.line ?? "?"})` : "";
+    text += `\n  at ${topFrame.name}${loc}`;
   }
-
-  if (context.variables.length > 0) {
-    lines.push("");
-    lines.push("Local variables:");
-    for (const v of context.variables) {
-      lines.push(`  ${v.name}: ${v.type ?? ""} = ${v.value}`);
-    }
-  }
-
-  return lines.join("\n");
+  return text;
 }
 
 export function formatExitedResponse(params: ExitedParams): string {
@@ -104,9 +79,9 @@ async function handleExecution(
   const event = await waitPromise;
 
   if (event.type === "stopped") {
-    const context = await fetchContext(client, event.params.threadId);
+    const topFrame = await fetchTopFrame(client, event.params.threadId);
     return {
-      content: [{ type: "text" as const, text: formatStoppedResponse(event.params, context) }],
+      content: [{ type: "text" as const, text: formatStoppedResponse(event.params, topFrame) }],
     };
   }
 
@@ -120,7 +95,7 @@ async function handleExecution(
 export function registerExecutionTools(server: McpServer, clientManager: ClientManager) {
   server.tool(
     "continue",
-    "Continue execution until the next breakpoint or program exit. Returns the stop location with stack trace and local variables.",
+    "Continue execution until the next breakpoint or program exit.",
     {
       threadId: z.coerce.number().optional().describe("Thread ID to continue (default: all threads)"),
     },
@@ -132,7 +107,7 @@ export function registerExecutionTools(server: McpServer, clientManager: ClientM
 
   server.tool(
     "stepIn",
-    "Step into the next function call. Returns the stop location with stack trace and local variables.",
+    "Step into the next function call.",
     {
       threadId: z.coerce.number().optional().describe("Thread ID"),
     },
@@ -144,7 +119,7 @@ export function registerExecutionTools(server: McpServer, clientManager: ClientM
 
   server.tool(
     "stepOver",
-    "Step over the current line. Returns the stop location with stack trace and local variables.",
+    "Step over the current line.",
     {
       threadId: z.coerce.number().optional().describe("Thread ID"),
     },
@@ -156,7 +131,7 @@ export function registerExecutionTools(server: McpServer, clientManager: ClientM
 
   server.tool(
     "stepOut",
-    "Step out of the current function. Returns the stop location with stack trace and local variables.",
+    "Step out of the current function.",
     {
       threadId: z.coerce.number().optional().describe("Thread ID"),
     },
