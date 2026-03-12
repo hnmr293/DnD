@@ -110,6 +110,42 @@ public class SimpleEvaluator
             catch { }
         }
 
+        // Look up parameter by name from metadata
+        try
+        {
+            var module = frame.Function.Module;
+            var import = module.GetMetaDataInterface<MetaDataImport>();
+            var methodToken = (mdMethodDef)frame.Function.Token;
+            var enumHandle = IntPtr.Zero;
+            var paramTokens = new mdParamDef[32];
+            try
+            {
+                var count = import.EnumParams(ref enumHandle, methodToken, paramTokens);
+                int paramIndex = 0;
+                while (count > 0)
+                {
+                    for (int i = 0; i < count; i++)
+                    {
+                        var props = import.GetParamProps(paramTokens[i]);
+                        if (props.szName == name)
+                        {
+                            if (enumHandle != IntPtr.Zero) import.CloseEnum(enumHandle);
+                            try { return frame.GetArgument(paramIndex); }
+                            catch { return null; }
+                        }
+                        paramIndex++;
+                    }
+                    count = import.EnumParams(ref enumHandle, methodToken, paramTokens);
+                }
+                if (enumHandle != IntPtr.Zero) import.CloseEnum(enumHandle);
+            }
+            catch
+            {
+                try { if (enumHandle != IntPtr.Zero) import.CloseEnum(enumHandle); } catch { }
+            }
+        }
+        catch { }
+
         if (name.StartsWith("arg") && int.TryParse(name[3..], out var argIndex))
         {
             try { return frame.GetArgument(argIndex); }

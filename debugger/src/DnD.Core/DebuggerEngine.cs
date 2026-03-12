@@ -579,13 +579,18 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
 
         try
         {
+            var import = module.GetMetaDataInterface<MetaDataImport>();
+            var methodToken = (mdMethodDef)frame.Function.Token;
+            var paramNames = GetParameterNames(import, methodToken);
+
             for (int i = 0; ; i++)
             {
                 try
                 {
                     var value = frame.GetArgument(i);
+                    var name = i < paramNames.Count ? paramNames[i] : $"arg{i}";
                     var (displayValue, type, varRef) = valueReader.Read(value, _variableStore);
-                    variables.Add(new Variable($"arg{i}", displayValue, varRef, type));
+                    variables.Add(new Variable(name, displayValue, varRef, type));
                 }
                 catch { break; }
             }
@@ -593,6 +598,33 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         catch { }
 
         return variables;
+    }
+
+    private static List<string> GetParameterNames(MetaDataImport import, mdMethodDef methodToken)
+    {
+        var names = new List<string>();
+        var enumHandle = IntPtr.Zero;
+        var paramTokens = new mdParamDef[32];
+        try
+        {
+            var count = import.EnumParams(ref enumHandle, methodToken, paramTokens);
+            while (count > 0)
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    var props = import.GetParamProps(paramTokens[i]);
+                    names.Add(props.szName);
+                }
+                count = import.EnumParams(ref enumHandle, methodToken, paramTokens);
+            }
+            if (enumHandle != IntPtr.Zero)
+                import.CloseEnum(enumHandle);
+        }
+        catch
+        {
+            try { if (enumHandle != IntPtr.Zero) import.CloseEnum(enumHandle); } catch { }
+        }
+        return names;
     }
 
     private void EnsureState(DebuggerState expectedState)
