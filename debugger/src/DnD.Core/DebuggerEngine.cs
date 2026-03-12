@@ -391,6 +391,10 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         var (resultEval, success) = await _evalTcs.Task;
         _evalTcs = null;
 
+        // Func-eval resumes and re-stops the process, neutering old ICorDebug objects.
+        // Refresh the frame map so subsequent evaluations use valid frames.
+        RefreshFrameMap();
+
         if (!success)
         {
             // Resume process after failed eval
@@ -630,6 +634,29 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         _nextFrameId = 0;
     }
 
+    private void RefreshFrameMap()
+    {
+        _frameMap.Clear();
+        _nextFrameId = 0;
+        _variableStore.Clear();
+
+        if (_stoppedThread == null) return;
+
+        try
+        {
+            foreach (var chain in _stoppedThread.EnumerateChains())
+            {
+                if (!chain.IsManaged) continue;
+                foreach (var frame in chain.EnumerateFrames())
+                {
+                    if (frame is not CorDebugILFrame ilFrame) continue;
+                    _frameMap[_nextFrameId++] = ilFrame;
+                }
+            }
+        }
+        catch { }
+    }
+
     private void SetEntryPointBreakpoint(CorDebugModule module)
     {
         try
@@ -645,9 +672,19 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
             var entryPointToken = corHeader.EntryPointTokenOrRelativeVirtualAddress;
             if (entryPointToken == 0) return;
 
+            // Find the first non-hidden sequence point so the breakpoint has source info
+            int ilOffset = 0;
+            var reader = GetSymbolReader(module);
+            if (reader != null)
+            {
+                var seqPoints = reader.GetSequencePoints(entryPointToken);
+                if (seqPoints.Count > 0)
+                    ilOffset = seqPoints[0].ILOffset;
+            }
+
             var function = module.GetFunctionFromToken((mdMethodDef)entryPointToken);
             var code = function.ILCode;
-            var bp = code.CreateBreakpoint(0);
+            var bp = code.CreateBreakpoint(ilOffset);
             bp.Activate(true);
 
             _callbackHandler!.EntryBreakpoint = bp;

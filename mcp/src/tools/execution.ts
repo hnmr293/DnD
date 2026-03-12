@@ -16,7 +16,7 @@ interface ExitEvent {
   params: ExitedParams;
 }
 
-function waitForStopOrExit(client: DebuggerClient, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<StopEvent | ExitEvent> {
+export function waitForStopOrExit(client: DebuggerClient, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<StopEvent | ExitEvent> {
   return new Promise((resolve, reject) => {
     let resolved = false;
     const cleanup = () => {
@@ -52,7 +52,7 @@ interface StopContext {
   variables: Variable[];
 }
 
-async function fetchContext(client: DebuggerClient, threadId: number): Promise<StopContext> {
+export async function fetchContext(client: DebuggerClient, threadId: number): Promise<StopContext> {
   try {
     const { stackFrames } = await client.getStackTrace({ threadId });
     let variables: Variable[] = [];
@@ -66,7 +66,7 @@ async function fetchContext(client: DebuggerClient, threadId: number): Promise<S
   }
 }
 
-function formatStoppedResponse(params: StoppedParams, context: StopContext): string {
+export function formatStoppedResponse(params: StoppedParams, context: StopContext): string {
   const lines: string[] = [];
   lines.push(`Stopped: ${params.reason}${params.description ? ` — ${params.description}` : ""} (thread ${params.threadId})`);
 
@@ -90,13 +90,14 @@ function formatStoppedResponse(params: StoppedParams, context: StopContext): str
   return lines.join("\n");
 }
 
-function formatExitedResponse(params: ExitedParams): string {
+export function formatExitedResponse(params: ExitedParams): string {
   return `Process exited with code ${params.exitCode}`;
 }
 
 async function handleExecution(
   client: DebuggerClient,
   action: () => Promise<void>,
+  clientManager: ClientManager,
 ): Promise<{ content: { type: "text"; text: string }[] }> {
   const waitPromise = waitForStopOrExit(client);
   await action();
@@ -109,6 +110,8 @@ async function handleExecution(
     };
   }
 
+  // Process exited — dispose client so next launch spawns a fresh host
+  await clientManager.dispose();
   return {
     content: [{ type: "text" as const, text: formatExitedResponse(event.params) }],
   };
@@ -119,11 +122,11 @@ export function registerExecutionTools(server: McpServer, clientManager: ClientM
     "continue",
     "Continue execution until the next breakpoint or program exit. Returns the stop location with stack trace and local variables.",
     {
-      threadId: z.number().optional().describe("Thread ID to continue (default: all threads)"),
+      threadId: z.coerce.number().optional().describe("Thread ID to continue (default: all threads)"),
     },
     async (params) => {
       const client = clientManager.getClient();
-      return handleExecution(client, () => client.continue(params));
+      return handleExecution(client, () => client.continue(params), clientManager);
     }
   );
 
@@ -131,11 +134,11 @@ export function registerExecutionTools(server: McpServer, clientManager: ClientM
     "stepIn",
     "Step into the next function call. Returns the stop location with stack trace and local variables.",
     {
-      threadId: z.number().optional().describe("Thread ID"),
+      threadId: z.coerce.number().optional().describe("Thread ID"),
     },
     async (params) => {
       const client = clientManager.getClient();
-      return handleExecution(client, () => client.stepIn(params));
+      return handleExecution(client, () => client.stepIn(params), clientManager);
     }
   );
 
@@ -143,11 +146,11 @@ export function registerExecutionTools(server: McpServer, clientManager: ClientM
     "stepOver",
     "Step over the current line. Returns the stop location with stack trace and local variables.",
     {
-      threadId: z.number().optional().describe("Thread ID"),
+      threadId: z.coerce.number().optional().describe("Thread ID"),
     },
     async (params) => {
       const client = clientManager.getClient();
-      return handleExecution(client, () => client.stepOver(params));
+      return handleExecution(client, () => client.stepOver(params), clientManager);
     }
   );
 
@@ -155,11 +158,11 @@ export function registerExecutionTools(server: McpServer, clientManager: ClientM
     "stepOut",
     "Step out of the current function. Returns the stop location with stack trace and local variables.",
     {
-      threadId: z.number().optional().describe("Thread ID"),
+      threadId: z.coerce.number().optional().describe("Thread ID"),
     },
     async (params) => {
       const client = clientManager.getClient();
-      return handleExecution(client, () => client.stepOut(params));
+      return handleExecution(client, () => client.stepOut(params), clientManager);
     }
   );
 }

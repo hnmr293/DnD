@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ClientManager } from "../client-manager.js";
+import { waitForStopOrExit, fetchContext, formatStoppedResponse, formatExitedResponse } from "./execution.js";
 
 export function registerProcessTools(server: McpServer, clientManager: ClientManager) {
   server.tool(
@@ -15,9 +16,21 @@ export function registerProcessTools(server: McpServer, clientManager: ClientMan
     },
     async (params) => {
       const client = await clientManager.ensureClient();
+      const waitPromise = waitForStopOrExit(client);
       const result = await client.launch(params);
+      const event = await waitPromise;
+
+      if (event.type === "stopped") {
+        const context = await fetchContext(client, event.params.threadId);
+        return {
+          content: [{ type: "text" as const, text: formatStoppedResponse(event.params, context) }],
+        };
+      }
+
+      // Process ran to completion without stopping
+      await clientManager.dispose();
       return {
-        content: [{ type: "text" as const, text: `Process launched with PID ${result.processId}` }],
+        content: [{ type: "text" as const, text: formatExitedResponse(event.params) }],
       };
     }
   );
@@ -26,7 +39,7 @@ export function registerProcessTools(server: McpServer, clientManager: ClientMan
     "attach",
     "Attach the debugger to a running .NET process.",
     {
-      processId: z.number().describe("Process ID to attach to"),
+      processId: z.coerce.number().describe("Process ID to attach to"),
     },
     async (params) => {
       const client = await clientManager.ensureClient();

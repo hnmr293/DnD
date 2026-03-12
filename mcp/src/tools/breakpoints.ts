@@ -8,7 +8,7 @@ export function registerBreakpointTools(server: McpServer, clientManager: Client
     "Set a breakpoint at a specific file and line. Can be called before or after launching.",
     {
       file: z.string().describe("Absolute path to the source file"),
-      line: z.number().describe("Line number (1-based)"),
+      line: z.coerce.number().describe("Line number (1-based)"),
     },
     async (params) => {
       const client = await clientManager.ensureClient();
@@ -27,7 +27,7 @@ export function registerBreakpointTools(server: McpServer, clientManager: Client
     "removeBreakpoint",
     "Remove a previously set breakpoint by its ID.",
     {
-      breakpointId: z.number().describe("Breakpoint ID to remove"),
+      breakpointId: z.coerce.number().describe("Breakpoint ID to remove"),
     },
     async (params) => {
       const client = clientManager.getClient();

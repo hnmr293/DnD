@@ -7,7 +7,7 @@ export function registerInspectionTools(server: McpServer, clientManager: Client
     "getStackTrace",
     "Get the current call stack. The process must be stopped at a breakpoint or step.",
     {
-      threadId: z.number().optional().describe("Thread ID (default: stopped thread)"),
+      threadId: z.coerce.number().optional().describe("Thread ID (default: stopped thread)"),
     },
     async (params) => {
       const client = clientManager.getClient();
@@ -29,7 +29,7 @@ export function registerInspectionTools(server: McpServer, clientManager: Client
     "getVariables",
     "Get variables for a given scope. Use variablesReference=0 for top-frame locals, or a variablesReference from a previous response to expand objects.",
     {
-      variablesReference: z.number().describe("Variables reference (0 for top-frame locals)"),
+      variablesReference: z.coerce.number().describe("Variables reference (0 for top-frame locals)"),
     },
     async (params) => {
       const client = clientManager.getClient();
@@ -51,7 +51,7 @@ export function registerInspectionTools(server: McpServer, clientManager: Client
     "Evaluate an expression in the context of the current stopped frame. Supports variable names, property access, method calls, and arithmetic.",
     {
       expression: z.string().describe("Expression to evaluate (e.g., 'x', 'obj.Name', 'a + b')"),
-      frameId: z.number().optional().describe("Stack frame ID (default: top frame)"),
+      frameId: z.coerce.number().optional().describe("Stack frame ID (default: top frame)"),
     },
     async (params) => {
       const client = clientManager.getClient();
