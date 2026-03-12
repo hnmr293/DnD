@@ -104,6 +104,25 @@ public class BreakpointManager
         catch { return null; }
     }
 
+    /// <summary>
+    /// Finds the user-assigned breakpoint ID for a given ICorDebug breakpoint
+    /// by comparing COM RCW identity (casting to object gives the same RCW instance
+    /// for the same underlying COM object, regardless of interface type).
+    /// </summary>
+    public int? FindBreakpointId(CorDebugBreakpoint breakpoint)
+    {
+        foreach (var (id, entry) in _breakpoints)
+        {
+            try
+            {
+                if (ReferenceEquals((object)entry.CorBreakpoint.Raw, (object)breakpoint.Raw))
+                    return id;
+            }
+            catch { }
+        }
+        return null;
+    }
+
     private record BreakpointEntry(string File, int Line, CorDebugFunctionBreakpoint CorBreakpoint);
     private record PendingBreakpoint(int Id, string File, int Line);
 }

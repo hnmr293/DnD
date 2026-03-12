@@ -57,10 +57,12 @@ async function fetchTopFrame(client: DebuggerClient, threadId: number): Promise<
 }
 
 export function formatStoppedResponse(params: StoppedParams, topFrame: StackFrame | null): string {
-  let text = `Stopped: ${params.reason}${params.description ? ` — ${params.description}` : ""} (thread ${params.threadId})`;
+  const bpId = params.breakpointId != null ? ` #${params.breakpointId}` : "";
+  let text = `Stopped: ${params.reason}${bpId}${params.description ? ` — ${params.description}` : ""} (thread ${params.threadId})`;
   if (topFrame) {
     const loc = topFrame.file ? ` (${topFrame.file}:${topFrame.line ?? "?"})` : "";
-    text += `\n  at ${topFrame.name}${loc}`;
+    const mod = topFrame.moduleId ? ` [${topFrame.moduleId.split(/[/\\]/).pop()}]` : "";
+    text += `\n  at ${topFrame.name}${loc}${mod}`;
   }
   return text;
 }
@@ -107,7 +109,7 @@ export function registerExecutionTools(server: McpServer, clientManager: ClientM
 
   server.tool(
     "stepIn",
-    "Step into the next function call.",
+    "Step into the next function call. If the current line has no function call, behaves like stepOver (advances to the next line).",
     {
       threadId: z.coerce.number().optional().describe("Thread ID"),
     },
@@ -119,7 +121,7 @@ export function registerExecutionTools(server: McpServer, clientManager: ClientM
 
   server.tool(
     "stepOver",
-    "Step over the current line.",
+    "Step over the current line, executing any function calls without stopping inside them.",
     {
       threadId: z.coerce.number().optional().describe("Thread ID"),
     },
@@ -131,7 +133,7 @@ export function registerExecutionTools(server: McpServer, clientManager: ClientM
 
   server.tool(
     "stepOut",
-    "Step out of the current function.",
+    "Step out of the current function, continuing until it returns to the caller.",
     {
       threadId: z.coerce.number().optional().describe("Thread ID"),
     },

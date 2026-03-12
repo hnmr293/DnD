@@ -12,6 +12,7 @@ public class ManagedCallbackHandler
     private bool _hadUnhandledException;
 
     internal CorDebugFunctionBreakpoint? EntryBreakpoint { get; set; }
+    internal CorDebugBreakpoint? LastHitBreakpoint { get; set; }
 
     public event Action<CorDebugThread, StopReason, string?>? OnStopped;
     public event Action<int>? OnProcessExited;
@@ -49,10 +50,12 @@ public class ManagedCallbackHandler
             if (entryBp != null)
             {
                 EntryBreakpoint = null;
+                LastHitBreakpoint = null;
                 try { entryBp.Activate(false); } catch { }
                 OnStopped?.Invoke(e.Thread, StopReason.Entry, "Entry point");
                 return;
             }
+            LastHitBreakpoint = e.Breakpoint;
             OnStopped?.Invoke(e.Thread, StopReason.Breakpoint, null);
         };
 

@@ -46,9 +46,9 @@ public abstract class DebugTestBase : IAsyncLifetime
 
         Rpc = new JsonRpc(handler);
 
-        Rpc.AddLocalRpcMethod("stopped", (StopReason reason, int threadId, string? description) =>
+        Rpc.AddLocalRpcMethod("stopped", (StopReason reason, int threadId, string? description, int? breakpointId) =>
         {
-            StoppedQueue.Add(new StoppedNotification(reason, threadId, description));
+            StoppedQueue.Add(new StoppedNotification(reason, threadId, description, breakpointId));
         });
 
         Rpc.AddLocalRpcMethod("exited", (int exitCode) =>

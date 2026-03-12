@@ -14,10 +14,13 @@ export function registerBreakpointTools(server: McpServer, clientManager: Client
       const client = await clientManager.ensureClient();
       const result = await client.setBreakpoint(params);
       const bp = result.breakpoint;
+      const status = bp.verified
+        ? "verified"
+        : "pending — will activate when code is loaded";
       return {
         content: [{
           type: "text" as const,
-          text: `Breakpoint ${bp.id} set at ${bp.file}:${bp.line} (verified: ${bp.verified})`,
+          text: `Breakpoint ${bp.id} set at ${bp.file}:${bp.line} (${status})`,
         }],
       };
     }
@@ -48,7 +51,7 @@ export function registerBreakpointTools(server: McpServer, clientManager: Client
         return { content: [{ type: "text" as const, text: "No breakpoints set" }] };
       }
       const lines = result.breakpoints.map(
-        (bp) => `  #${bp.id} ${bp.file}:${bp.line} (verified: ${bp.verified})`
+        (bp) => `  #${bp.id} ${bp.file}:${bp.line} (${bp.verified ? "verified" : "pending"})`
       );
       return {
         content: [{ type: "text" as const, text: `Breakpoints:\n${lines.join("\n")}` }],

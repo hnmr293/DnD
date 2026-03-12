@@ -410,6 +410,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     {
         _callbackHandler!.OnStopped += (thread, reason, description) =>
         {
+            int? breakpointId = null;
             lock (_lock)
             {
                 _stoppedThread = thread;
@@ -417,6 +418,12 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
                 _variableStore.Clear();
                 _frameMap.Clear();
                 _nextFrameId = 0;
+
+                if (reason == StopReason.Breakpoint && _callbackHandler.LastHitBreakpoint != null)
+                {
+                    breakpointId = _breakpointManager.FindBreakpointId(_callbackHandler.LastHitBreakpoint);
+                    _callbackHandler.LastHitBreakpoint = null;
+                }
             }
 
             var threadId = 0;
@@ -424,7 +431,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
             catch { }
 
             Stopped?.Invoke(this, new StoppedEventArgs(
-                new StoppedNotification(reason, threadId, description)));
+                new StoppedNotification(reason, threadId, description, breakpointId)));
         };
 
         _callbackHandler.OnProcessExited += (exitCode) =>

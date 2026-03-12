@@ -116,6 +116,7 @@ export interface StoppedParams {
   reason: StopReason;
   threadId: number;
   description?: string;
+  breakpointId?: number;
 }
 
 export interface ExitedParams {
