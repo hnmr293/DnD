@@ -9,18 +9,18 @@ public static class MetadataHelper
 {
     /// <summary>
     /// Try to get a field value by name from an object value.
+    /// Walks the type hierarchy to find fields on base classes.
     /// </summary>
     public static CorDebugValue? TryGetField(CorDebugObjectValue objVal, string fieldName)
     {
         try
         {
-            var classType = objVal.Class;
-            var module = classType.Module;
-            var import = module.GetMetaDataInterface<MetaDataImport>();
-
-            var token = FindFieldToken(import, classType.Token, fieldName);
-            if (token.HasValue)
-                return objVal.GetFieldValue(classType.Raw, (mdFieldDef)token.Value);
+            foreach (var (module, import, classToken, rawClass) in WalkTypeHierarchy(objVal))
+            {
+                var token = FindFieldToken(import, classToken, fieldName);
+                if (token.HasValue)
+                    return objVal.GetFieldValue(rawClass, (mdFieldDef)token.Value);
+            }
         }
         catch { }
         return null;
@@ -36,17 +36,17 @@ public static class MetadataHelper
 
     /// <summary>
     /// Find a method by name and argument count on an object value's type.
+    /// Walks the type hierarchy to find methods on base classes.
     /// </summary>
     public static CorDebugFunction? FindMethodByName(CorDebugObjectValue objVal, string methodName, int argCount)
     {
         try
         {
-            var classType = objVal.Class;
-            var module = classType.Module;
-            var import = module.GetMetaDataInterface<MetaDataImport>();
-            var classToken = classType.Token;
-
-            return FindMethodInClassToken(module, import, classToken, methodName, argCount);
+            foreach (var (module, import, classToken, _) in WalkTypeHierarchy(objVal))
+            {
+                var result = FindMethodInClassToken(module, import, classToken, methodName, argCount);
+                if (result != null) return result;
+            }
         }
         catch { }
         return null;
@@ -125,6 +125,61 @@ public static class MetadataHelper
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Walk the type hierarchy of an object value, yielding (module, import, classToken, rawClass)
+    /// for each level from the runtime type up to (but not including) System.Object.
+    /// </summary>
+    private static IEnumerable<(CorDebugModule module, MetaDataImport import, mdTypeDef classToken, ICorDebugClass rawClass)>
+        WalkTypeHierarchy(CorDebugObjectValue objVal)
+    {
+        ICorDebugType? currentType = null;
+        bool fallback = false;
+        try
+        {
+            var val2 = (ICorDebugValue2)objVal.Raw;
+            val2.GetExactType(out currentType);
+        }
+        catch { fallback = true; }
+
+        if (fallback || currentType == null)
+        {
+            // Fallback: yield only the immediate class
+            var classType = objVal.Class;
+            var module = classType.Module;
+            var import = module.GetMetaDataInterface<MetaDataImport>();
+            yield return (module, import, classType.Token, classType.Raw);
+            yield break;
+        }
+
+        int depth = 0;
+        while (currentType != null && depth++ < 20)
+        {
+            ICorDebugClass? cls;
+            try
+            {
+                currentType.GetClass(out cls);
+                if (cls == null) break;
+            }
+            catch { break; }
+
+            CorDebugClass clsWrapper;
+            CorDebugModule mod;
+            MetaDataImport imp;
+            try
+            {
+                clsWrapper = new CorDebugClass(cls);
+                mod = clsWrapper.Module;
+                imp = mod.GetMetaDataInterface<MetaDataImport>();
+            }
+            catch { break; }
+
+            yield return (mod, imp, clsWrapper.Token, cls);
+
+            try { currentType.GetBase(out currentType); }
+            catch { break; }
+        }
     }
 
     private static int CountMethodParams(MetaDataImport import, mdMethodDef methodToken)

@@ -9,7 +9,8 @@ public class SimpleEvaluator
 {
     public EvaluateResponse Evaluate(
         string expression, CorDebugILFrame frame,
-        ISymbolReader? reader, VariableStore store)
+        ISymbolReader? reader, VariableStore store,
+        CorDebugValue? exceptionValue = null)
     {
         try
         {
@@ -18,7 +19,7 @@ public class SimpleEvaluator
                 throw new LocalRpcException("Empty expression")
                 { ErrorCode = ErrorCodes.EvaluationFailed };
 
-            var value = ResolveFirstSegment(segments[0], frame, reader)
+            var value = ResolveFirstSegment(segments[0], frame, reader, exceptionValue)
                 ?? throw new LocalRpcException($"Variable '{segments[0]}' not found")
                 { ErrorCode = ErrorCodes.EvaluationFailed };
             for (int i = 1; i < segments.Count; i++)
@@ -83,8 +84,12 @@ public class SimpleEvaluator
     }
 
     private static CorDebugValue? ResolveFirstSegment(
-        string name, CorDebugILFrame frame, ISymbolReader? reader)
+        string name, CorDebugILFrame frame, ISymbolReader? reader,
+        CorDebugValue? exceptionValue = null)
     {
+        if (name == "$exception" && exceptionValue != null)
+            return exceptionValue;
+
         if (name == "this")
         {
             try { return frame.GetArgument(0); }

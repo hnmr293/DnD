@@ -346,6 +346,14 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         {
             if (_frameMap.TryGetValue(0, out var topFrame))
                 variables.AddRange(GetFrameVariables(topFrame, valueReader));
+
+            // Add $exception pseudo-variable if there's a current exception
+            var exVal = GetCurrentExceptionValue();
+            if (exVal != null)
+            {
+                var (displayValue, type, varRef) = valueReader.Read(exVal, _variableStore);
+                variables.Add(new Variable("$exception", displayValue, varRef, type));
+            }
         }
         else if (_frameMap.TryGetValue(request.VariablesReference - 1000000, out var frame))
         {
@@ -371,12 +379,13 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
             { ErrorCode = ErrorCodes.EvaluationFailed };
         var module = frame.Function.Module;
         var reader = GetSymbolReader(module);
+        var exVal = GetCurrentExceptionValue();
 
         // Try SimpleEvaluator first (fast path: variable names and field access)
         try
         {
             var evaluator = new Inspection.SimpleEvaluator();
-            return evaluator.Evaluate(request.Expression, frame, reader, _variableStore);
+            return evaluator.Evaluate(request.Expression, frame, reader, _variableStore, exVal);
         }
         catch (LocalRpcException) when (_stoppedThread != null)
         {
@@ -389,7 +398,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
             var ast = Inspection.ExpressionParser.Parse(request.Expression);
             var thread = _stoppedThread ?? throw new LocalRpcException("No thread available for evaluation")
             { ErrorCode = ErrorCodes.EvaluationFailed };
-            var funcEval = new Inspection.FuncEvalEvaluator(this, thread, frame, reader, _variableStore);
+            var funcEval = new Inspection.FuncEvalEvaluator(this, thread, frame, reader, _variableStore, exVal);
             return await funcEval.EvaluateAsync(ast);
         }
         catch (FormatException ex)
@@ -715,6 +724,19 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         {
             return $"<unknown>@0x{methodToken:X}";
         }
+    }
+
+    private CorDebugValue? GetCurrentExceptionValue()
+    {
+        try
+        {
+            var exValue = _stoppedThread?.CurrentException;
+            if (exValue == null) return null;
+            // Verify it's not a null reference
+            if (exValue is CorDebugReferenceValue refVal && refVal.IsNull) return null;
+            return exValue;
+        }
+        catch { return null; }
     }
 
     private List<Variable> GetFrameVariables(CorDebugILFrame frame, Inspection.ValueReader valueReader)

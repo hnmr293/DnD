@@ -115,10 +115,10 @@ public static class ExpressionParser
             }
 
             // Identifiers / keywords
-            if (char.IsLetter(input[i]) || input[i] == '_')
+            if (char.IsLetter(input[i]) || input[i] == '_' || input[i] == '$')
             {
                 var start = i;
-                while (i < input.Length && (char.IsLetterOrDigit(input[i]) || input[i] == '_')) i++;
+                while (i < input.Length && (char.IsLetterOrDigit(input[i]) || input[i] == '_' || input[i] == '$')) i++;
                 var text = input[start..i];
                 var type = text switch
                 {
