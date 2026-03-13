@@ -34,6 +34,15 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     private readonly Inspection.VariableStore _variableStore = new();
     private TaskCompletionSource<(CorDebugEval Eval, bool Success)>? _evalTcs;
 
+    // $returnValue pseudo-variable: captured after StepOut completes
+    private CorDebugValue? _lastReturnValue;
+    private bool _pendingStepOut;
+    private int _returnValueCallILOffset;
+    private List<CorDebugFunctionBreakpoint>? _returnValueBreakpoints;
+    // When both StepComplete and Breakpoint callbacks fire at the same location,
+    // suppress the second one to avoid a duplicate stop.
+    private bool _suppressNextStepCallback;
+
     public event EventHandler<StoppedEventArgs>? Stopped;
     public event EventHandler<ExitedEventArgs>? Exited;
     public event EventHandler<OutputEventArgs>? Output;
@@ -251,11 +260,16 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         EnsureState(DebuggerState.Stopped);
         var thread = GetThread(request.ThreadId);
 
+        // Before stepping out, set hidden native breakpoints at the caller's
+        // return-value live offsets so GetReturnValueForILOffset will work.
+        SetupReturnValueBreakpoints(thread);
+
         var stepper = thread.CreateStepper();
         stepper.SetInterceptMask(CorDebugIntercept.INTERCEPT_NONE);
         stepper.SetUnmappedStopMask(CorDebugUnmappedStop.STOP_NONE);
         stepper.StepOut();
 
+        _pendingStepOut = true;
         ClearStopState();
         _state = DebuggerState.Running;
         _process!.Continue(false);
@@ -381,6 +395,13 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
                 var (displayValue, type, varRef) = valueReader.Read(exVal, _variableStore);
                 variables.Add(new Variable("$exception", displayValue, varRef, type));
             }
+
+            // Add $returnValue pseudo-variable if we just stepped out
+            if (_lastReturnValue != null)
+            {
+                var (displayValue, type, varRef) = valueReader.Read(_lastReturnValue, _variableStore);
+                variables.Add(new Variable("$returnValue", displayValue, varRef, type));
+            }
         }
         else if (_frameMap.TryGetValue(request.VariablesReference - 1000000, out var frame))
         {
@@ -412,7 +433,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         try
         {
             var evaluator = new Inspection.SimpleEvaluator();
-            return evaluator.Evaluate(request.Expression, frame, reader, _variableStore, exVal);
+            return evaluator.Evaluate(request.Expression, frame, reader, _variableStore, exVal, _lastReturnValue);
         }
         catch (LocalRpcException) when (_stoppedThread != null)
         {
@@ -425,7 +446,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
             var ast = Inspection.ExpressionParser.Parse(request.Expression);
             var thread = _stoppedThread ?? throw new LocalRpcException("No thread available for evaluation")
             { ErrorCode = ErrorCodes.EvaluationFailed };
-            var funcEval = new Inspection.FuncEvalEvaluator(this, thread, frame, reader, _variableStore, exVal);
+            var funcEval = new Inspection.FuncEvalEvaluator(this, thread, frame, reader, _variableStore, exVal, _lastReturnValue);
             return await funcEval.EvaluateAsync(ast);
         }
         catch (FormatException ex)
@@ -694,6 +715,14 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
                 return;
             }
 
+            // Suppress duplicate Step callback from double StepComplete+Breakpoint
+            if (reason == StopReason.Step && _suppressNextStepCallback)
+            {
+                _suppressNextStepCallback = false;
+                _process?.Continue(false);
+                return;
+            }
+
             // Non-breakpoint stops (step, pause, exception, entry)
             lock (_lock)
             {
@@ -702,6 +731,21 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
                 _variableStore.Clear();
                 _frameMap.Clear();
                 _nextFrameId = 0;
+            }
+
+            // Capture return value after StepOut
+            if (reason == StopReason.Step && _pendingStepOut)
+            {
+                _pendingStepOut = false;
+                TryCaptureReturnValue(thread);
+                CleanupReturnValueBreakpoints();
+                // Both StepComplete and Breakpoint callbacks may fire — suppress the second
+                _suppressNextStepCallback = true;
+            }
+            else
+            {
+                _pendingStepOut = false;
+                CleanupReturnValueBreakpoints();
             }
 
             var tid = 0;
@@ -894,6 +938,114 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         catch { return null; }
     }
 
+    /// <summary>
+    /// Before StepOut, set hidden native breakpoints at the caller's return-value
+    /// live offsets. This is required by the CLR: GetReturnValueForILOffset only
+    /// works when a breakpoint is set at the native offset returned by
+    /// GetReturnValueLiveOffset.
+    /// </summary>
+    private void SetupReturnValueBreakpoints(CorDebugThread thread)
+    {
+        _returnValueBreakpoints = null;
+        try
+        {
+            var currentFrame = thread.ActiveFrame;
+            if (currentFrame == null) return;
+
+            // Get the caller frame — this is where the call instruction is
+            var callerFrame = currentFrame.Caller as CorDebugILFrame;
+            if (callerFrame == null) return;
+
+            var callILOffset = (int)callerFrame.IP.pnOffset;
+
+            // GetReturnValueLiveOffset is on ICorDebugCode3, which is only available
+            // on the native code object (not the IL code).
+            var callerNativeCode = callerFrame.Function.NativeCode;
+            if (callerNativeCode == null) return;
+
+            // Find the call instruction. The caller frame's IP may not point directly
+            // at the call — probe forward from the IP to find the actual call site.
+            int[] nativeOffsets = null!;
+            bool found = false;
+            for (int probe = callILOffset; probe <= callILOffset + 20; probe++)
+            {
+                var probeHr = callerNativeCode.TryGetReturnValueLiveOffset(probe, out var probeOffsets);
+                if (probeHr == ClrDebug.HRESULT.S_OK && probeOffsets != null && probeOffsets.Length > 0)
+                {
+                    callILOffset = probe;
+                    nativeOffsets = probeOffsets;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) return;
+
+            var breakpoints = new List<CorDebugFunctionBreakpoint>();
+            foreach (var nativeOffset in nativeOffsets)
+            {
+                try
+                {
+                    var bp = callerNativeCode.CreateBreakpoint((int)nativeOffset);
+                    bp.Activate(true);
+                    breakpoints.Add(bp);
+                }
+                catch { }
+            }
+
+            if (breakpoints.Count > 0)
+            {
+                _returnValueCallILOffset = callILOffset;
+                _returnValueBreakpoints = breakpoints;
+                if (_callbackHandler != null)
+                {
+                    foreach (var bp in breakpoints)
+                        _callbackHandler.ReturnValueBreakpoints.Add(bp);
+                }
+            }
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// After StepOut completes, capture the return value using
+    /// ICorDebugILFrame3.GetReturnValueForILOffset with the pre-stored call site offset.
+    /// </summary>
+    private void TryCaptureReturnValue(CorDebugThread thread)
+    {
+        if (_returnValueBreakpoints == null) return;
+        try
+        {
+            var frame = thread.ActiveFrame as CorDebugILFrame;
+            if (frame == null) return;
+
+            var retHr = frame.TryGetReturnValueForILOffset(_returnValueCallILOffset, out var retVal);
+            if (retHr == ClrDebug.HRESULT.S_OK && retVal != null)
+                _lastReturnValue = retVal;
+        }
+        catch { }
+    }
+
+    /// <summary>
+    /// Deactivate and remove hidden return-value native breakpoints.
+    /// </summary>
+    private void CleanupReturnValueBreakpoints()
+    {
+        var breakpoints = _returnValueBreakpoints;
+        _returnValueBreakpoints = null;
+        if (breakpoints == null) return;
+
+        if (_callbackHandler != null)
+        {
+            foreach (var bp in breakpoints)
+                _callbackHandler.ReturnValueBreakpoints.Remove(bp);
+        }
+
+        foreach (var bp in breakpoints)
+        {
+            try { bp.Activate(false); } catch { }
+        }
+    }
+
     private List<Variable> GetFrameVariables(CorDebugILFrame frame, Inspection.ValueReader valueReader)
     {
         var variables = new List<Variable>();
@@ -1013,6 +1165,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         _variableStore.Clear();
         _frameMap.Clear();
         _nextFrameId = 0;
+        _lastReturnValue = null;
     }
 
     private void RefreshFrameMap()

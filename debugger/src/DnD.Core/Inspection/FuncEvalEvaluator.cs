@@ -18,6 +18,7 @@ public class FuncEvalEvaluator
     private readonly ISymbolReader? _reader;
     private readonly VariableStore _store;
     private readonly CorDebugValue? _exceptionValue;
+    private readonly CorDebugValue? _returnValue;
     private readonly ValueReader _valueReader = new();
 
     public FuncEvalEvaluator(
@@ -26,7 +27,8 @@ public class FuncEvalEvaluator
         CorDebugILFrame frame,
         ISymbolReader? reader,
         VariableStore store,
-        CorDebugValue? exceptionValue = null)
+        CorDebugValue? exceptionValue = null,
+        CorDebugValue? returnValue = null)
     {
         _engine = engine;
         _thread = thread;
@@ -34,6 +36,7 @@ public class FuncEvalEvaluator
         _reader = reader;
         _store = store;
         _exceptionValue = exceptionValue;
+        _returnValue = returnValue;
     }
 
     public async Task<EvaluateResponse> EvaluateAsync(ExprNode node)
@@ -92,6 +95,8 @@ public class FuncEvalEvaluator
     {
         if (name == "$exception" && _exceptionValue != null)
             return _exceptionValue;
+        if (name == "$returnValue" && _returnValue != null)
+            return _returnValue;
 
         // Delegate to SimpleEvaluator's variable resolution logic
         if (name == "this")

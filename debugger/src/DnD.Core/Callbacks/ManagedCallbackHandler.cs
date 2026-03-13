@@ -13,6 +13,7 @@ public class ManagedCallbackHandler
 
     internal CorDebugFunctionBreakpoint? EntryBreakpoint { get; set; }
     internal CorDebugBreakpoint? LastHitBreakpoint { get; set; }
+    internal HashSet<CorDebugFunctionBreakpoint> ReturnValueBreakpoints { get; } = new();
 
     /// <summary>
     /// Exception breakpoint settings. Controls which exceptions cause a stop.
@@ -61,6 +62,14 @@ public class ManagedCallbackHandler
                 LastHitBreakpoint = null;
                 try { entryBp.Activate(false); } catch { }
                 OnStopped?.Invoke(e.Thread, StopReason.Entry, "Entry point");
+                return;
+            }
+            // Hidden return-value breakpoints: report as Step, not Breakpoint
+            if (ReturnValueBreakpoints.Count > 0 && e.Breakpoint is CorDebugFunctionBreakpoint funcBp
+                && ReturnValueBreakpoints.Contains(funcBp))
+            {
+                LastHitBreakpoint = null;
+                OnStopped?.Invoke(e.Thread, StopReason.Step, null);
                 return;
             }
             LastHitBreakpoint = e.Breakpoint;
