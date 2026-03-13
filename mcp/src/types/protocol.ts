@@ -23,6 +23,17 @@ export interface Variable {
   variablesReference: number;
 }
 
+export interface ThreadInfo {
+  id: number;
+  name?: string | null;
+  current: boolean;
+}
+
+export interface ExceptionInfo {
+  type: string;
+  message?: string | null;
+}
+
 export type StopReason = "breakpoint" | "step" | "pause" | "exception" | "entry";
 export type OutputCategory = "stdout" | "stderr" | "console";
 
@@ -78,6 +89,10 @@ export interface EvaluateParams {
   frameId?: number;
 }
 
+export interface GetExceptionParams {
+  threadId?: number;
+}
+
 // === Response Results ===
 
 export interface LaunchResult {
@@ -108,6 +123,17 @@ export interface EvaluateResult {
   result: string;
   type?: string | null;
   variablesReference: number;
+}
+
+export interface GetThreadsResult {
+  threads: ThreadInfo[];
+}
+
+export interface GetExceptionResult {
+  type: string;
+  message?: string | null;
+  stackTrace?: string | null;
+  innerException?: ExceptionInfo | null;
 }
 
 // === Notification Params ===

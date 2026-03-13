@@ -124,6 +124,14 @@ public class JsonRpcIntegrationTests : IAsyncLifetime
         Assert.Equal(0, exited.ExitCode);
     }
 
+    // === Pause ===
+
+    [Fact]
+    public async Task Pause_Succeeds()
+    {
+        await _rpc!.InvokeAsync("pause");
+    }
+
     // === Execution control ===
 
     [Fact]
@@ -249,6 +257,45 @@ public class JsonRpcIntegrationTests : IAsyncLifetime
         Assert.Equal("stub:", result.Result);
     }
 
+    // === Threads ===
+
+    [Fact]
+    public async Task GetThreads_ReturnsSingleThread()
+    {
+        var result = await _rpc!.InvokeAsync<GetThreadsResponse>("getThreads");
+        Assert.Single(result.Threads);
+        Assert.Equal(1, result.Threads[0].Id);
+        Assert.True(result.Threads[0].Current);
+    }
+
+    // === Exception ===
+
+    [Fact]
+    public async Task GetException_ReturnsStubException()
+    {
+        var result = await _rpc!.InvokeWithParameterObjectAsync<GetExceptionResponse>(
+            "getException", new GetExceptionRequest());
+        Assert.Equal("System.Exception", result.Type);
+        Assert.Equal("Stub exception", result.Message);
+    }
+
+    [Fact]
+    public async Task GetException_WithThreadId_Succeeds()
+    {
+        var result = await _rpc!.InvokeWithParameterObjectAsync<GetExceptionResponse>(
+            "getException", new GetExceptionRequest(ThreadId: 5));
+        Assert.Equal("System.Exception", result.Type);
+    }
+
+    [Fact]
+    public async Task GetException_StackTraceAndInnerExceptionAreNull()
+    {
+        var result = await _rpc!.InvokeWithParameterObjectAsync<GetExceptionResponse>(
+            "getException", new GetExceptionRequest());
+        Assert.Null(result.StackTrace);
+        Assert.Null(result.InnerException);
+    }
+
     // === Edge cases: Unicode ===
 
     [Fact]
@@ -336,6 +383,15 @@ public class JsonRpcIntegrationTests : IAsyncLifetime
         var eval = await _rpc!.InvokeWithParameterObjectAsync<EvaluateResponse>(
             "evaluate", new EvaluateRequest(Expression: "myVar"));
         Assert.Equal("stub:myVar", eval.Result);
+
+        // Get threads
+        var threads = await _rpc!.InvokeAsync<GetThreadsResponse>("getThreads");
+        Assert.Single(threads.Threads);
+
+        // Get exception
+        var exception = await _rpc!.InvokeWithParameterObjectAsync<GetExceptionResponse>(
+            "getException", new GetExceptionRequest());
+        Assert.Equal("System.Exception", exception.Type);
 
         // Terminate
         await _rpc!.InvokeAsync("terminate");

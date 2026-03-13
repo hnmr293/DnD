@@ -192,6 +192,132 @@ public class StubDebuggerEngineTests
         Assert.Equal($"stub:{expr}", result.Result);
     }
 
+    // === Pause ===
+
+    [Fact]
+    public async Task Pause_FiresStoppedWithPauseReason()
+    {
+        StoppedNotification? received = null;
+        _engine.Stopped += (_, e) => received = e.Notification;
+
+        await _engine.PauseAsync();
+
+        // The stub fires Stopped asynchronously with a delay
+        await Task.Delay(200);
+        Assert.NotNull(received);
+        Assert.Equal(StopReason.Pause, received!.Reason);
+    }
+
+    [Fact]
+    public async Task Pause_ThreadIdIsOne()
+    {
+        StoppedNotification? received = null;
+        _engine.Stopped += (_, e) => received = e.Notification;
+
+        await _engine.PauseAsync();
+        await Task.Delay(200);
+
+        Assert.Equal(1, received!.ThreadId);
+    }
+
+    [Fact]
+    public async Task Pause_DescriptionContainsStubStopped()
+    {
+        StoppedNotification? received = null;
+        _engine.Stopped += (_, e) => received = e.Notification;
+
+        await _engine.PauseAsync();
+        await Task.Delay(200);
+
+        Assert.Equal("Stub stopped", received!.Description);
+    }
+
+    [Fact]
+    public async Task Pause_NoSubscriber_CompletesWithoutError()
+    {
+        await _engine.PauseAsync();
+        await Task.Delay(100); // Let the background task complete
+    }
+
+    // === GetThreads ===
+
+    [Fact]
+    public async Task GetThreads_ReturnsSingleThread()
+    {
+        var result = await _engine.GetThreadsAsync();
+        Assert.Single(result.Threads);
+    }
+
+    [Fact]
+    public async Task GetThreads_ThreadIdIsOne()
+    {
+        var result = await _engine.GetThreadsAsync();
+        Assert.Equal(1, result.Threads[0].Id);
+    }
+
+    [Fact]
+    public async Task GetThreads_ThreadIsMarkedCurrent()
+    {
+        var result = await _engine.GetThreadsAsync();
+        Assert.True(result.Threads[0].Current);
+    }
+
+    [Fact]
+    public async Task GetThreads_CalledTwice_ReturnsSameResult()
+    {
+        var r1 = await _engine.GetThreadsAsync();
+        var r2 = await _engine.GetThreadsAsync();
+        Assert.Equal(r1.Threads[0].Id, r2.Threads[0].Id);
+        Assert.Equal(r1.Threads[0].Current, r2.Threads[0].Current);
+    }
+
+    // === GetException ===
+
+    [Fact]
+    public async Task GetException_ReturnsExceptionType()
+    {
+        var result = await _engine.GetExceptionAsync(new GetExceptionRequest());
+        Assert.Equal("System.Exception", result.Type);
+    }
+
+    [Fact]
+    public async Task GetException_ReturnsStubMessage()
+    {
+        var result = await _engine.GetExceptionAsync(new GetExceptionRequest());
+        Assert.Equal("Stub exception", result.Message);
+    }
+
+    [Fact]
+    public async Task GetException_StackTraceIsNull()
+    {
+        var result = await _engine.GetExceptionAsync(new GetExceptionRequest());
+        Assert.Null(result.StackTrace);
+    }
+
+    [Fact]
+    public async Task GetException_InnerExceptionIsNull()
+    {
+        var result = await _engine.GetExceptionAsync(new GetExceptionRequest());
+        Assert.Null(result.InnerException);
+    }
+
+    [Fact]
+    public async Task GetException_WithThreadId_IgnoresThreadId()
+    {
+        var result = await _engine.GetExceptionAsync(new GetExceptionRequest(ThreadId: 42));
+        Assert.Equal("System.Exception", result.Type);
+        Assert.Equal("Stub exception", result.Message);
+    }
+
+    [Fact]
+    public async Task GetException_CalledTwice_ReturnsSameResult()
+    {
+        var r1 = await _engine.GetExceptionAsync(new GetExceptionRequest());
+        var r2 = await _engine.GetExceptionAsync(new GetExceptionRequest());
+        Assert.Equal(r1.Type, r2.Type);
+        Assert.Equal(r1.Message, r2.Message);
+    }
+
     // === Corner cases: double/repeated calls ===
 
     [Fact]

@@ -3,9 +3,10 @@ import { spawn, type ChildProcess } from "node:child_process";
 import * as rpc from "vscode-jsonrpc/node.js";
 import {
   LaunchRequest, AttachRequest, DetachRequest, TerminateRequest,
-  ContinueRequest, StepInRequest, StepOverRequest, StepOutRequest,
+  ContinueRequest, PauseRequest, StepInRequest, StepOverRequest, StepOutRequest,
   SetBreakpointRequest, RemoveBreakpointRequest, GetBreakpointsRequest,
   GetStackTraceRequest, GetVariablesRequest, EvaluateRequest,
+  GetThreadsRequest, GetExceptionRequest,
   StoppedNotification, ExitedNotification, OutputNotification,
 } from "./types/rpc-methods.js";
 import type {
@@ -18,6 +19,8 @@ import type {
   GetStackTraceParams, GetStackTraceResult,
   GetVariablesParams, GetVariablesResult,
   EvaluateParams, EvaluateResult,
+  GetThreadsResult,
+  GetExceptionParams, GetExceptionResult,
   StoppedParams, ExitedParams, OutputParams,
 } from "./types/protocol.js";
 
@@ -97,6 +100,10 @@ export class DebuggerClient extends EventEmitter<DebuggerClientEvents> {
 
   // Execution control
 
+  async pause(): Promise<void> {
+    return this.sendRequest(PauseRequest);
+  }
+
   async continue(params: ContinueParams): Promise<void> {
     return this.sendRequest(ContinueRequest, params);
   }
@@ -139,6 +146,14 @@ export class DebuggerClient extends EventEmitter<DebuggerClientEvents> {
 
   async evaluate(params: EvaluateParams): Promise<EvaluateResult> {
     return this.sendRequest(EvaluateRequest, params);
+  }
+
+  async getThreads(): Promise<GetThreadsResult> {
+    return this.sendRequest(GetThreadsRequest);
+  }
+
+  async getException(params: GetExceptionParams): Promise<GetExceptionResult> {
+    return this.sendRequest(GetExceptionRequest, params);
   }
 
   // Lifecycle

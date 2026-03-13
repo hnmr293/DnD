@@ -4,6 +4,55 @@ import type { ClientManager } from "../client-manager.js";
 
 export function registerInspectionTools(server: McpServer, clientManager: ClientManager) {
   server.tool(
+    "getThreads",
+    "List all threads in the debugged process. Shows thread IDs and marks the current (stopped) thread.",
+    async () => {
+      const client = clientManager.getClient();
+      const result = await client.getThreads();
+      if (result.threads.length === 0) {
+        return { content: [{ type: "text" as const, text: "No threads" }] };
+      }
+      const lines = result.threads.map((t) => {
+        const marker = t.current ? " *" : "";
+        const name = t.name ? ` "${t.name}"` : "";
+        return `  Thread ${t.id}${name}${marker}`;
+      });
+      return {
+        content: [{ type: "text" as const, text: `Threads (* = current):\n${lines.join("\n")}` }],
+      };
+    }
+  );
+
+  server.tool(
+    "getException",
+    "Get the current exception when stopped at an exception. Returns the exception type, message, stack trace, and inner exception if present.",
+    {
+      threadId: z.coerce.number().optional().describe("Thread ID (default: stopped thread)"),
+    },
+    async (params) => {
+      const client = clientManager.getClient();
+      const result = await client.getException(params);
+      let text = `${result.type}`;
+      if (result.message) {
+        text += `: ${result.message}`;
+      }
+      if (result.stackTrace) {
+        text += `\n\nStack trace:\n${result.stackTrace}`;
+      }
+      if (result.innerException) {
+        text += `\n\nInner exception: ${result.innerException.type}`;
+        if (result.innerException.message) {
+          text += `: ${result.innerException.message}`;
+        }
+      }
+      return {
+        content: [{ type: "text" as const, text }],
+      };
+    }
+  );
+
+
+  server.tool(
     "getStackTrace",
     "Get the current call stack. The process must be stopped at a breakpoint or step.",
     {

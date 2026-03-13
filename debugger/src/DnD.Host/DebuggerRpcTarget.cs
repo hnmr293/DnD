@@ -66,6 +66,9 @@ public class DebuggerRpcTarget
     public Task<GetBreakpointsResponse> GetBreakpoints()
         => _engine.GetBreakpointsAsync();
 
+    public Task Pause()
+        => _engine.PauseAsync();
+
     // Inspection
 
     [JsonRpcMethod(UseSingleObjectParameterDeserialization = true)]
@@ -79,6 +82,13 @@ public class DebuggerRpcTarget
     [JsonRpcMethod(UseSingleObjectParameterDeserialization = true)]
     public Task<EvaluateResponse> Evaluate(EvaluateRequest request)
         => _engine.EvaluateAsync(request);
+
+    public Task<GetThreadsResponse> GetThreads()
+        => _engine.GetThreadsAsync();
+
+    [JsonRpcMethod(UseSingleObjectParameterDeserialization = true)]
+    public Task<GetExceptionResponse> GetException(GetExceptionRequest request)
+        => _engine.GetExceptionAsync(request);
 
     // Notification relay
 

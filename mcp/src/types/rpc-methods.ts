@@ -10,6 +10,8 @@ import type {
   GetStackTraceParams, GetStackTraceResult,
   GetVariablesParams, GetVariablesResult,
   EvaluateParams, EvaluateResult,
+  GetThreadsResult,
+  GetExceptionParams, GetExceptionResult,
   StoppedParams, ExitedParams, OutputParams,
 } from "./protocol.js";
 
@@ -21,6 +23,7 @@ export const DetachRequest = new rpc.RequestType0<void, void>("detach");
 export const TerminateRequest = new rpc.RequestType0<void, void>("terminate");
 
 export const ContinueRequest = new rpc.RequestType<ContinueParams, void, void>("continue");
+export const PauseRequest = new rpc.RequestType0<void, void>("pause");
 export const StepInRequest = new rpc.RequestType<StepInParams, void, void>("stepIn");
 export const StepOverRequest = new rpc.RequestType<StepOverParams, void, void>("stepOver");
 export const StepOutRequest = new rpc.RequestType<StepOutParams, void, void>("stepOut");
@@ -32,6 +35,8 @@ export const GetBreakpointsRequest = new rpc.RequestType0<GetBreakpointsResult, 
 export const GetStackTraceRequest = new rpc.RequestType<GetStackTraceParams, GetStackTraceResult, void>("getStackTrace");
 export const GetVariablesRequest = new rpc.RequestType<GetVariablesParams, GetVariablesResult, void>("getVariables");
 export const EvaluateRequest = new rpc.RequestType<EvaluateParams, EvaluateResult, void>("evaluate");
+export const GetThreadsRequest = new rpc.RequestType0<GetThreadsResult, void>("getThreads");
+export const GetExceptionRequest = new rpc.RequestType<GetExceptionParams, GetExceptionResult, void>("getException");
 
 // === Notifications (server -> client) ===
 

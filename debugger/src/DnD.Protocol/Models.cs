@@ -25,6 +25,17 @@ public record Variable(
     [property: JsonPropertyName("type")] string? Type = null
 );
 
+public record ThreadInfo(
+    [property: JsonPropertyName("id")] int Id,
+    [property: JsonPropertyName("name")] string? Name = null,
+    [property: JsonPropertyName("current")] bool Current = false
+);
+
+public record ExceptionInfo(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("message")] string? Message = null
+);
+
 public enum StopReason { Breakpoint, Step, Pause, Exception, Entry }
 
 public enum OutputCategory { Stdout, Stderr, Console }

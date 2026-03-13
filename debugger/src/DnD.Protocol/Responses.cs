@@ -26,6 +26,17 @@ public record GetVariablesResponse(
     [property: JsonPropertyName("variables")] Variable[] Variables
 );
 
+public record GetThreadsResponse(
+    [property: JsonPropertyName("threads")] ThreadInfo[] Threads
+);
+
+public record GetExceptionResponse(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("message")] string? Message = null,
+    [property: JsonPropertyName("stackTrace")] string? StackTrace = null,
+    [property: JsonPropertyName("innerException")] ExceptionInfo? InnerException = null
+);
+
 public record EvaluateResponse(
     [property: JsonPropertyName("result")] string Result,
     [property: JsonPropertyName("variablesReference")] int VariablesReference,

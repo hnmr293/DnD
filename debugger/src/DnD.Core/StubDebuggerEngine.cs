@@ -28,6 +28,12 @@ public class StubDebuggerEngine : IDebuggerEngine
         return Task.CompletedTask;
     }
 
+    public Task PauseAsync()
+    {
+        FireStoppedAfterDelay(StopReason.Pause);
+        return Task.CompletedTask;
+    }
+
     public Task ContinueAsync(ContinueRequest request)
     {
         FireStoppedAfterDelay(StopReason.Breakpoint);
@@ -85,4 +91,13 @@ public class StubDebuggerEngine : IDebuggerEngine
     public Task<EvaluateResponse> EvaluateAsync(EvaluateRequest request)
         => Task.FromResult(new EvaluateResponse(
             Result: $"stub:{request.Expression}", VariablesReference: 0, Type: "string"));
+
+    public Task<GetThreadsResponse> GetThreadsAsync()
+        => Task.FromResult(new GetThreadsResponse(Threads: [
+            new ThreadInfo(Id: 1, Current: true)
+        ]));
+
+    public Task<GetExceptionResponse> GetExceptionAsync(GetExceptionRequest request)
+        => Task.FromResult(new GetExceptionResponse(
+            Type: "System.Exception", Message: "Stub exception"));
 }

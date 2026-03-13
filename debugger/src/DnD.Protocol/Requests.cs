@@ -43,6 +43,10 @@ public record RemoveBreakpointRequest(
 );
 
 // Inspection
+public record GetExceptionRequest(
+    [property: JsonPropertyName("threadId")] int? ThreadId = null
+);
+
 public record GetStackTraceRequest(
     [property: JsonPropertyName("threadId")] int? ThreadId = null
 );

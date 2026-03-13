@@ -153,6 +153,41 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         catch { return false; }
     }
 
+    public Task PauseAsync()
+    {
+        if (_state == DebuggerState.Stopped)
+        {
+            // Already stopped — re-fire event so caller gets a response
+            var tid = 0;
+            try { tid = _stoppedThread?.Id ?? 0; } catch { }
+            Stopped?.Invoke(this, new StoppedEventArgs(
+                new StoppedNotification(StopReason.Pause, tid, "Already stopped")));
+            return Task.CompletedTask;
+        }
+
+        EnsureState(DebuggerState.Running);
+        _process!.Stop(0);
+
+        CorDebugThread? thread = null;
+        try { foreach (var t in _process.EnumerateThreads()) { thread = t; break; } }
+        catch { }
+
+        lock (_lock)
+        {
+            _stoppedThread = thread;
+            _state = DebuggerState.Stopped;
+            _variableStore.Clear();
+            _frameMap.Clear();
+            _nextFrameId = 0;
+        }
+
+        var threadId = 0;
+        try { threadId = thread?.Id ?? 0; } catch { }
+        Stopped?.Invoke(this, new StoppedEventArgs(
+            new StoppedNotification(StopReason.Pause, threadId, "Paused by user")));
+        return Task.CompletedTask;
+    }
+
     public Task ContinueAsync(ContinueRequest request)
     {
         EnsureState(DebuggerState.Stopped);
@@ -362,6 +397,136 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
             throw new LocalRpcException($"Invalid expression: {ex.Message}")
             { ErrorCode = ErrorCodes.EvaluationFailed };
         }
+    }
+
+    public Task<GetThreadsResponse> GetThreadsAsync()
+    {
+        EnsureState(DebuggerState.Stopped);
+        var threads = new List<ThreadInfo>();
+        try
+        {
+            var stoppedId = 0;
+            try { stoppedId = _stoppedThread?.Id ?? 0; } catch { }
+
+            foreach (var thread in _process!.EnumerateThreads())
+            {
+                try
+                {
+                    var id = thread.Id;
+                    threads.Add(new ThreadInfo(Id: id, Current: id == stoppedId));
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return Task.FromResult(new GetThreadsResponse(threads.ToArray()));
+    }
+
+    public Task<GetExceptionResponse> GetExceptionAsync(GetExceptionRequest request)
+    {
+        EnsureState(DebuggerState.Stopped);
+        var thread = GetThread(request.ThreadId);
+
+        try
+        {
+            var exValue = thread.CurrentException;
+            if (exValue == null)
+                throw new LocalRpcException("No current exception") { ErrorCode = ErrorCodes.EvaluationFailed };
+
+            CorDebugValue value = exValue;
+            if (value is CorDebugReferenceValue refVal)
+            {
+                if (refVal.IsNull)
+                    throw new LocalRpcException("No current exception") { ErrorCode = ErrorCodes.EvaluationFailed };
+                value = refVal.Dereference();
+            }
+            if (value is not CorDebugObjectValue objVal)
+                throw new LocalRpcException("Exception is not an object") { ErrorCode = ErrorCodes.EvaluationFailed };
+
+            var cls = objVal.Class;
+            var module = cls.Module;
+            var import = module.GetMetaDataInterface<MetaDataImport>();
+            var typeName = import.GetTypeDefProps(cls.Token).szTypeDef;
+
+            // Resolve System.Exception fields
+            var exTypeDef = import.FindTypeDefByName("System.Exception", 0);
+            var exClass = module.GetClassFromToken(exTypeDef);
+            var fields = EnumFieldsByName(import, exTypeDef, "_message", "_stackTraceString", "_innerException");
+
+            string? message = ReadStringField(objVal, exClass, import, fields, "_message");
+            string? stackTrace = ReadStringField(objVal, exClass, import, fields, "_stackTraceString");
+            ExceptionInfo? inner = ReadInnerException(objVal, exClass, import, fields);
+
+            return Task.FromResult(new GetExceptionResponse(typeName, message, stackTrace, inner));
+        }
+        catch (LocalRpcException) { throw; }
+        catch (Exception ex)
+        {
+            throw new LocalRpcException($"Failed to read exception: {ex.Message}")
+            { ErrorCode = ErrorCodes.EvaluationFailed };
+        }
+    }
+
+    private static Dictionary<string, mdFieldDef> EnumFieldsByName(
+        MetaDataImport import, mdTypeDef typeDef, params string[] names)
+    {
+        var result = new Dictionary<string, mdFieldDef>();
+        var nameSet = new HashSet<string>(names);
+        var enumHandle = IntPtr.Zero;
+        var tokens = new mdFieldDef[64];
+        try
+        {
+            var count = import.EnumFields(ref enumHandle, typeDef, tokens);
+            for (int i = 0; i < count; i++)
+            {
+                var props = import.GetFieldProps(tokens[i]);
+                if (nameSet.Contains(props.szField))
+                    result[props.szField] = tokens[i];
+            }
+        }
+        finally { if (enumHandle != IntPtr.Zero) import.CloseEnum(enumHandle); }
+        return result;
+    }
+
+    private static string? ReadStringField(
+        CorDebugObjectValue objVal, CorDebugClass exClass, MetaDataImport import,
+        Dictionary<string, mdFieldDef> fields, string fieldName)
+    {
+        if (!fields.TryGetValue(fieldName, out var token)) return null;
+        try
+        {
+            var val = objVal.GetFieldValue(exClass.Raw, token);
+            if (val is CorDebugReferenceValue r)
+            {
+                if (r.IsNull) return null;
+                val = r.Dereference();
+            }
+            return val is CorDebugStringValue s ? s.GetString(s.Length) : null;
+        }
+        catch { return null; }
+    }
+
+    private static ExceptionInfo? ReadInnerException(
+        CorDebugObjectValue objVal, CorDebugClass exClass, MetaDataImport import,
+        Dictionary<string, mdFieldDef> fields)
+    {
+        if (!fields.TryGetValue("_innerException", out var token)) return null;
+        try
+        {
+            var val = objVal.GetFieldValue(exClass.Raw, token);
+            if (val is CorDebugReferenceValue r)
+            {
+                if (r.IsNull) return null;
+                val = r.Dereference();
+            }
+            if (val is not CorDebugObjectValue innerObj) return null;
+
+            var innerType = import.GetTypeDefProps(innerObj.Class.Token).szTypeDef;
+            // Re-read _message from inner exception using same System.Exception class
+            string? innerMsg = ReadStringField(innerObj, exClass, import, fields, "_message");
+            return new ExceptionInfo(innerType, innerMsg);
+        }
+        catch { return null; }
     }
 
     /// <summary>

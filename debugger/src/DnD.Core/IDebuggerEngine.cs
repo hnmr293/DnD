@@ -27,6 +27,7 @@ public interface IDebuggerEngine
 
     // Execution control
     Task ContinueAsync(ContinueRequest request);
+    Task PauseAsync();
     Task StepInAsync(StepInRequest request);
     Task StepOverAsync(StepOverRequest request);
     Task StepOutAsync(StepOutRequest request);
@@ -40,6 +41,8 @@ public interface IDebuggerEngine
     Task<GetStackTraceResponse> GetStackTraceAsync(GetStackTraceRequest request);
     Task<GetVariablesResponse> GetVariablesAsync(GetVariablesRequest request);
     Task<EvaluateResponse> EvaluateAsync(EvaluateRequest request);
+    Task<GetThreadsResponse> GetThreadsAsync();
+    Task<GetExceptionResponse> GetExceptionAsync(GetExceptionRequest request);
 
     // Events
     event EventHandler<StoppedEventArgs>? Stopped;

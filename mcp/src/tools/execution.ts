@@ -78,6 +78,7 @@ async function handleExecution(
 ): Promise<{ content: { type: "text"; text: string }[] }> {
   const waitPromise = waitForStopOrExit(client);
   await action();
+  clientManager.markRunning();
   const event = await waitPromise;
 
   if (event.type === "stopped") {
@@ -95,6 +96,29 @@ async function handleExecution(
 }
 
 export function registerExecutionTools(server: McpServer, clientManager: ClientManager) {
+  server.tool(
+    "pause",
+    "Pause (break) the running process. Use this when the process is running and you need to inspect its state.",
+    async () => {
+      const client = clientManager.getClient();
+      // Register listener BEFORE calling pause — the stopped notification
+      // arrives during the RPC response, so we must not miss it.
+      const waitPromise = waitForStopOrExit(client, 5_000);
+      await client.pause();
+      const event = await waitPromise;
+      if (event.type === "stopped") {
+        const topFrame = await fetchTopFrame(client, event.params.threadId);
+        return {
+          content: [{ type: "text" as const, text: formatStoppedResponse(event.params, topFrame) }],
+        };
+      }
+      await clientManager.dispose();
+      return {
+        content: [{ type: "text" as const, text: formatExitedResponse(event.params) }],
+      };
+    }
+  );
+
   server.tool(
     "continue",
     "Continue execution until the next breakpoint or program exit.",

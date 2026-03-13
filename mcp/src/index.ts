@@ -25,13 +25,13 @@ await server.connect(transport);
 
 // Cleanup on process exit
 process.on("SIGINT", async () => {
-  await clientManager.dispose();
+  await clientManager.shutdown();
   await server.close();
   process.exit(0);
 });
 
 process.on("SIGTERM", async () => {
-  await clientManager.dispose();
+  await clientManager.shutdown();
   await server.close();
   process.exit(0);
 });
