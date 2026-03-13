@@ -12,4 +12,5 @@ class TestClass
     public TestClass(string n, int v) { Name = n; Value = v; }
     public override string ToString() => $"TestClass({Name}, {Value})";
     public int Add(int x) => Value + x;
+    public int Hang() { while (true) { } }
 }

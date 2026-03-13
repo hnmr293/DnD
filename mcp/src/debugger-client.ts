@@ -45,7 +45,10 @@ export class DebuggerClient extends EventEmitter<DebuggerClientEvents> {
   }
 
   async start(): Promise<void> {
-    this.process = spawn("dotnet", [this.hostPath, ...this.hostArgs], {
+    this.process = spawn("dotnet", [
+      this.hostPath, ...this.hostArgs,
+      "--parentPid", process.pid.toString(),
+    ], {
       stdio: ["pipe", "pipe", "pipe"],
     });
 

@@ -568,6 +568,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     /// <summary>
     /// Executes a func-eval on the debuggee by calling ICorDebugEval methods,
     /// then waits for the EvalComplete/EvalException callback.
+    /// Uses escalating abort strategy on timeout: Abort → Process.Stop+Abort → give up.
     /// </summary>
     public async Task<CorDebugValue> ExecuteEvalAsync(
         Action<CorDebugEval> setup, CorDebugThread thread, TimeSpan? timeout = null)
@@ -581,30 +582,66 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         setup(eval);
         _process!.Continue(false);
 
-        using var cts = new CancellationTokenSource(actualTimeout);
-        await using var registration = cts.Token.Register(() =>
+        try
         {
+            var evalTask = _evalTcs.Task;
+
+            // Phase 1: Wait for normal completion
+            if (await Task.WhenAny(evalTask, Task.Delay(actualTimeout)) == evalTask)
+                return HandleEvalResult(await evalTask);
+
+            // Phase 2: Soft abort via ICorDebugEval.Abort()
             try { eval.Abort(); } catch { }
-            _evalTcs?.TrySetException(
-                new TimeoutException($"Func-eval timed out after {actualTimeout.TotalSeconds}s"));
-        });
+            if (await Task.WhenAny(evalTask, Task.Delay(TimeSpan.FromSeconds(1))) == evalTask)
+            {
+                // Abort triggered callback — discard result, throw timeout
+                // Do NOT call Continue — process is stopped at the original position
+                _ = await evalTask;
+                RefreshFrameMap();
+                throw new LocalRpcException(
+                    $"Func-eval timed out after {actualTimeout.TotalSeconds}s")
+                { ErrorCode = ErrorCodes.EvaluationFailed };
+            }
 
-        var (resultEval, success) = await _evalTcs.Task;
-        _evalTcs = null;
+            // Phase 3: Hard stop via ICorDebugProcess.Stop() + re-abort
+            try { _process!.Stop(0); } catch { }
+            try { eval.Abort(); } catch { }
+            if (await Task.WhenAny(evalTask, Task.Delay(TimeSpan.FromSeconds(1))) == evalTask)
+            {
+                _ = await evalTask;
+                RefreshFrameMap();
+                throw new LocalRpcException(
+                    $"Func-eval timed out after {actualTimeout.TotalSeconds}s (hard stop)")
+                { ErrorCode = ErrorCodes.EvaluationFailed };
+            }
 
-        // Func-eval resumes and re-stops the process, neutering old ICorDebug objects.
-        // Refresh the frame map so subsequent evaluations use valid frames.
+            // Phase 4: Give up — force-fail the TCS so we don't hang
+            _evalTcs.TrySetException(new TimeoutException(
+                $"Func-eval could not be aborted after {actualTimeout.TotalSeconds}s"));
+            throw new LocalRpcException(
+                $"Func-eval timed out and could not be aborted")
+            { ErrorCode = ErrorCodes.EvaluationFailed };
+        }
+        finally
+        {
+            _evalTcs = null;
+        }
+    }
+
+    private CorDebugValue HandleEvalResult((CorDebugEval Eval, bool Success) result)
+    {
         RefreshFrameMap();
 
-        if (!success)
+        if (!result.Success)
         {
-            // Resume process after failed eval
-            _process!.Continue(false);
+            // Do NOT call Continue — process stays stopped at the original position
+            // so the user can inspect state or retry. The next user operation (continue,
+            // step, or another eval) will provide the Continue that ICorDebug needs.
             throw new LocalRpcException("Func-eval threw an exception in the debuggee")
             { ErrorCode = ErrorCodes.EvaluationFailed };
         }
 
-        return resultEval.Result;
+        return result.Eval.Result;
     }
 
     private void ApplyExceptionBreakpointSettings()
