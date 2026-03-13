@@ -3,6 +3,7 @@ namespace DnD.Host.Tests;
 using DnD.Protocol;
 using StreamJsonRpc;
 
+[Collection("DebugSession")]
 [Trait("Category", "DebugSession")]
 public class DebugSessionTests : DebugTestBase
 {
