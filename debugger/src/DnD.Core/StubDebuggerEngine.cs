@@ -70,7 +70,13 @@ public class StubDebuggerEngine : IDebuggerEngine
 
     public Task<SetBreakpointResponse> SetBreakpointAsync(SetBreakpointRequest request)
         => Task.FromResult(new SetBreakpointResponse(
-            new Breakpoint(_nextBreakpointId++, request.File, request.Line, Verified: true)));
+            new Breakpoint(_nextBreakpointId++, request.File, request.Line, Verified: true,
+                Condition: request.Condition, HitCount: request.HitCount)));
+
+    public Task<SetExceptionBreakpointsResponse> SetExceptionBreakpointsAsync(
+        SetExceptionBreakpointsRequest request)
+        => Task.FromResult(new SetExceptionBreakpointsResponse(
+            request.Thrown, request.Uncaught, request.Types));
 
     public Task RemoveBreakpointAsync(RemoveBreakpointRequest request)
         => Task.CompletedTask;

@@ -21,6 +21,11 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     private string? _programPath;
     private bool _exitedEventFired;
 
+    // Exception breakpoint settings (stored here so they survive pre-launch configuration)
+    private bool _exceptionStopOnThrown;
+    private bool _exceptionStopOnUncaught = true;
+    private string[]? _exceptionTypeFilter;
+
     private readonly Dictionary<int, CorDebugILFrame> _frameMap = new();
     private int _nextFrameId;
 
@@ -47,6 +52,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         _programPath = Path.GetFullPath(request.Program);
 
         _callbackHandler = new ManagedCallbackHandler();
+        ApplyExceptionBreakpointSettings();
         WireCallbackEvents();
 
         var result = _launcher.Launch(
@@ -71,6 +77,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         EnsureState(DebuggerState.NotStarted);
 
         _callbackHandler = new ManagedCallbackHandler();
+        ApplyExceptionBreakpointSettings();
         WireCallbackEvents();
 
         var result = _launcher.Attach(request.ProcessId, _callbackHandler.Callback);
@@ -258,7 +265,8 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     public Task<SetBreakpointResponse> SetBreakpointAsync(SetBreakpointRequest request)
     {
         EnsureNotTerminatedForBreakpoints();
-        return Task.FromResult(_breakpointManager.SetBreakpoint(request.File, request.Line));
+        return Task.FromResult(_breakpointManager.SetBreakpoint(
+            request.File, request.Line, request.Condition, request.HitCount));
     }
 
     public Task RemoveBreakpointAsync(RemoveBreakpointRequest request)
@@ -272,6 +280,25 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     {
         EnsureNotTerminatedForBreakpoints();
         return Task.FromResult(_breakpointManager.GetBreakpoints());
+    }
+
+    public Task<SetExceptionBreakpointsResponse> SetExceptionBreakpointsAsync(
+        SetExceptionBreakpointsRequest request)
+    {
+        // Store on engine so settings survive pre-launch configuration
+        _exceptionStopOnThrown = request.Thrown;
+        _exceptionStopOnUncaught = request.Uncaught;
+        _exceptionTypeFilter = request.Types;
+
+        // Apply immediately if handler already exists
+        if (_callbackHandler != null)
+        {
+            _callbackHandler.ExceptionStopOnThrown = _exceptionStopOnThrown;
+            _callbackHandler.ExceptionStopOnUncaught = _exceptionStopOnUncaught;
+            _callbackHandler.ExceptionTypeFilter = _exceptionTypeFilter;
+        }
+        return Task.FromResult(new SetExceptionBreakpointsResponse(
+            request.Thrown, request.Uncaught, request.Types));
     }
 
     public Task<GetStackTraceResponse> GetStackTraceAsync(GetStackTraceRequest request)
@@ -580,11 +607,57 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         return resultEval.Result;
     }
 
+    private void ApplyExceptionBreakpointSettings()
+    {
+        _callbackHandler!.ExceptionStopOnThrown = _exceptionStopOnThrown;
+        _callbackHandler.ExceptionStopOnUncaught = _exceptionStopOnUncaught;
+        _callbackHandler.ExceptionTypeFilter = _exceptionTypeFilter;
+    }
+
     private void WireCallbackEvents()
     {
         _callbackHandler!.OnStopped += (thread, reason, description) =>
         {
-            int? breakpointId = null;
+            // Quick hit-count check before full state setup
+            if (reason == StopReason.Breakpoint && _callbackHandler.LastHitBreakpoint != null)
+            {
+                var (shouldStop, bpId, condition) =
+                    _breakpointManager.CheckBreakpointHit(_callbackHandler.LastHitBreakpoint);
+                _callbackHandler.LastHitBreakpoint = null;
+
+                if (!shouldStop)
+                {
+                    // Hit count not reached — auto-continue without stopping
+                    _process!.Continue(false);
+                    return;
+                }
+
+                // Set up stopped state
+                lock (_lock)
+                {
+                    _stoppedThread = thread;
+                    _state = DebuggerState.Stopped;
+                    _variableStore.Clear();
+                    _frameMap.Clear();
+                    _nextFrameId = 0;
+                }
+
+                var threadId = 0;
+                try { threadId = thread?.Id ?? 0; } catch { }
+
+                if (condition != null)
+                {
+                    // Evaluate condition asynchronously
+                    _ = EvaluateBreakpointConditionAsync(bpId, threadId, condition);
+                    return;
+                }
+
+                Stopped?.Invoke(this, new StoppedEventArgs(
+                    new StoppedNotification(reason, threadId, description, bpId)));
+                return;
+            }
+
+            // Non-breakpoint stops (step, pause, exception, entry)
             lock (_lock)
             {
                 _stoppedThread = thread;
@@ -592,20 +665,13 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
                 _variableStore.Clear();
                 _frameMap.Clear();
                 _nextFrameId = 0;
-
-                if (reason == StopReason.Breakpoint && _callbackHandler.LastHitBreakpoint != null)
-                {
-                    breakpointId = _breakpointManager.FindBreakpointId(_callbackHandler.LastHitBreakpoint);
-                    _callbackHandler.LastHitBreakpoint = null;
-                }
             }
 
-            var threadId = 0;
-            try { threadId = thread?.Id ?? 0; }
-            catch { }
+            var tid = 0;
+            try { tid = thread?.Id ?? 0; } catch { }
 
             Stopped?.Invoke(this, new StoppedEventArgs(
-                new StoppedNotification(reason, threadId, description, breakpointId)));
+                new StoppedNotification(reason, tid, description)));
         };
 
         _callbackHandler.OnProcessExited += (exitCode) =>
@@ -724,6 +790,58 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         {
             return $"<unknown>@0x{methodToken:X}";
         }
+    }
+
+    private async Task EvaluateBreakpointConditionAsync(
+        int? breakpointId, int threadId, string condition)
+    {
+        // Populate the top frame so EvaluateAsync can access locals
+        try
+        {
+            var thread = _stoppedThread;
+            if (thread != null)
+            {
+                var activeFrame = thread.ActiveFrame as CorDebugILFrame;
+                if (activeFrame != null && !_frameMap.ContainsKey(0))
+                {
+                    _frameMap[0] = activeFrame;
+                    _nextFrameId = 1;
+                }
+            }
+        }
+        catch { }
+
+        try
+        {
+            var result = await EvaluateAsync(new EvaluateRequest(condition));
+            // Condition is true if result equals "true" (boolean)
+            if (result.Result.Equals("true", StringComparison.OrdinalIgnoreCase))
+            {
+                Stopped?.Invoke(this, new StoppedEventArgs(
+                    new StoppedNotification(StopReason.Breakpoint, threadId,
+                        null, breakpointId)));
+                return;
+            }
+        }
+        catch
+        {
+            // Condition evaluation failed — stop so user sees the issue
+            Stopped?.Invoke(this, new StoppedEventArgs(
+                new StoppedNotification(StopReason.Breakpoint, threadId,
+                    $"Condition '{condition}' evaluation failed", breakpointId)));
+            return;
+        }
+
+        // Condition was false — auto-continue
+        lock (_lock)
+        {
+            _stoppedThread = null;
+            _variableStore.Clear();
+            _frameMap.Clear();
+            _nextFrameId = 0;
+            _state = DebuggerState.Running;
+        }
+        _process!.Continue(false);
     }
 
     private CorDebugValue? GetCurrentExceptionValue()

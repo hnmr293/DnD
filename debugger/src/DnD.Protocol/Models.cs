@@ -6,7 +6,9 @@ public record Breakpoint(
     [property: JsonPropertyName("id")] int Id,
     [property: JsonPropertyName("file")] string File,
     [property: JsonPropertyName("line")] int Line,
-    [property: JsonPropertyName("verified")] bool Verified
+    [property: JsonPropertyName("verified")] bool Verified,
+    [property: JsonPropertyName("condition")] string? Condition = null,
+    [property: JsonPropertyName("hitCount")] int? HitCount = null
 );
 
 public record StackFrame(

@@ -36,6 +36,7 @@ public interface IDebuggerEngine
     Task<SetBreakpointResponse> SetBreakpointAsync(SetBreakpointRequest request);
     Task RemoveBreakpointAsync(RemoveBreakpointRequest request);
     Task<GetBreakpointsResponse> GetBreakpointsAsync();
+    Task<SetExceptionBreakpointsResponse> SetExceptionBreakpointsAsync(SetExceptionBreakpointsRequest request);
 
     // Inspection
     Task<GetStackTraceResponse> GetStackTraceAsync(GetStackTraceRequest request);

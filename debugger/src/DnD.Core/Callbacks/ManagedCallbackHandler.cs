@@ -14,6 +14,14 @@ public class ManagedCallbackHandler
     internal CorDebugFunctionBreakpoint? EntryBreakpoint { get; set; }
     internal CorDebugBreakpoint? LastHitBreakpoint { get; set; }
 
+    /// <summary>
+    /// Exception breakpoint settings. Controls which exceptions cause a stop.
+    /// Default: stop on uncaught (unhandled) exceptions only.
+    /// </summary>
+    internal bool ExceptionStopOnThrown { get; set; }
+    internal bool ExceptionStopOnUncaught { get; set; } = true;
+    internal string[]? ExceptionTypeFilter { get; set; }
+
     public event Action<CorDebugThread, StopReason, string?>? OnStopped;
     public event Action<int>? OnProcessExited;
     public event Action<CorDebugModule>? OnModuleLoaded;
@@ -76,12 +84,27 @@ public class ManagedCallbackHandler
 
         _callback.OnException2 += (s, e) =>
         {
-            if (e.EventType != CorDebugExceptionCallbackType.DEBUG_EXCEPTION_UNHANDLED)
+            bool isUnhandled = e.EventType == CorDebugExceptionCallbackType.DEBUG_EXCEPTION_UNHANDLED;
+            bool isFirstChance = e.EventType == CorDebugExceptionCallbackType.DEBUG_EXCEPTION_FIRST_CHANCE;
+
+            bool shouldStop = false;
+            if (isUnhandled && ExceptionStopOnUncaught) shouldStop = true;
+            if (isFirstChance && ExceptionStopOnThrown) shouldStop = true;
+
+            if (shouldStop && ExceptionTypeFilter is { Length: > 0 })
+            {
+                var typeName = GetExceptionTypeName(e.Thread);
+                shouldStop = ExceptionTypeFilter.Any(t =>
+                    typeName.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0);
+            }
+
+            if (!shouldStop)
             {
                 ContinueProcess();
                 return;
             }
-            _hadUnhandledException = true;
+
+            if (isUnhandled) _hadUnhandledException = true;
             var description = GetExceptionDescription(e.Thread);
             OnStopped?.Invoke(e.Thread, StopReason.Exception, description);
         };
@@ -139,6 +162,26 @@ public class ManagedCallbackHandler
             // Do NOT continue — the evaluator needs to handle the error
             OnEvalCompleted?.Invoke(e.Thread, e.Eval, false);
         };
+    }
+
+    private static string GetExceptionTypeName(CorDebugThread thread)
+    {
+        try
+        {
+            var exValue = thread.CurrentException;
+            if (exValue == null) return "";
+            CorDebugValue value = exValue;
+            if (value is CorDebugReferenceValue refVal)
+            {
+                if (refVal.IsNull) return "";
+                value = refVal.Dereference();
+            }
+            if (value is not CorDebugObjectValue objVal) return "";
+            var cls = objVal.Class;
+            var import = cls.Module.GetMetaDataInterface<MetaDataImport>();
+            return import.GetTypeDefProps(cls.Token).szTypeDef;
+        }
+        catch { return ""; }
     }
 
     private static string GetExceptionDescription(CorDebugThread thread)

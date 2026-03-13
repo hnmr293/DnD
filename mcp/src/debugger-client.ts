@@ -4,7 +4,7 @@ import * as rpc from "vscode-jsonrpc/node.js";
 import {
   LaunchRequest, AttachRequest, DetachRequest, TerminateRequest,
   ContinueRequest, PauseRequest, StepInRequest, StepOverRequest, StepOutRequest,
-  SetBreakpointRequest, RemoveBreakpointRequest, GetBreakpointsRequest,
+  SetBreakpointRequest, RemoveBreakpointRequest, GetBreakpointsRequest, SetExceptionBreakpointsRequest,
   GetStackTraceRequest, GetVariablesRequest, EvaluateRequest,
   GetThreadsRequest, GetExceptionRequest,
   StoppedNotification, ExitedNotification, OutputNotification,
@@ -16,6 +16,7 @@ import type {
   SetBreakpointParams, SetBreakpointResult,
   RemoveBreakpointParams,
   GetBreakpointsResult,
+  SetExceptionBreakpointsParams, SetExceptionBreakpointsResult,
   GetStackTraceParams, GetStackTraceResult,
   GetVariablesParams, GetVariablesResult,
   EvaluateParams, EvaluateResult,
@@ -132,6 +133,10 @@ export class DebuggerClient extends EventEmitter<DebuggerClientEvents> {
 
   async getBreakpoints(): Promise<GetBreakpointsResult> {
     return this.sendRequest(GetBreakpointsRequest);
+  }
+
+  async setExceptionBreakpoints(params: SetExceptionBreakpointsParams): Promise<SetExceptionBreakpointsResult> {
+    return this.sendRequest(SetExceptionBreakpointsRequest, params);
   }
 
   // Inspection

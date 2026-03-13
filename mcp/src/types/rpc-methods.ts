@@ -7,6 +7,7 @@ import type {
   SetBreakpointParams, SetBreakpointResult,
   RemoveBreakpointParams,
   GetBreakpointsResult,
+  SetExceptionBreakpointsParams, SetExceptionBreakpointsResult,
   GetStackTraceParams, GetStackTraceResult,
   GetVariablesParams, GetVariablesResult,
   EvaluateParams, EvaluateResult,
@@ -31,6 +32,7 @@ export const StepOutRequest = new rpc.RequestType<StepOutParams, void, void>("st
 export const SetBreakpointRequest = new rpc.RequestType<SetBreakpointParams, SetBreakpointResult, void>("setBreakpoint");
 export const RemoveBreakpointRequest = new rpc.RequestType<RemoveBreakpointParams, void, void>("removeBreakpoint");
 export const GetBreakpointsRequest = new rpc.RequestType0<GetBreakpointsResult, void>("getBreakpoints");
+export const SetExceptionBreakpointsRequest = new rpc.RequestType<SetExceptionBreakpointsParams, SetExceptionBreakpointsResult, void>("setExceptionBreakpoints");
 
 export const GetStackTraceRequest = new rpc.RequestType<GetStackTraceParams, GetStackTraceResult, void>("getStackTrace");
 export const GetVariablesRequest = new rpc.RequestType<GetVariablesParams, GetVariablesResult, void>("getVariables");

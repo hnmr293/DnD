@@ -5,6 +5,8 @@ export interface Breakpoint {
   file: string;
   line: number;
   verified: boolean;
+  condition?: string | null;
+  hitCount?: number | null;
 }
 
 export interface StackFrame {
@@ -70,6 +72,20 @@ export interface StepOutParams {
 export interface SetBreakpointParams {
   file: string;
   line: number;
+  condition?: string;
+  hitCount?: number;
+}
+
+export interface SetExceptionBreakpointsParams {
+  thrown?: boolean;
+  uncaught?: boolean;
+  types?: string[];
+}
+
+export interface SetExceptionBreakpointsResult {
+  thrown: boolean;
+  uncaught: boolean;
+  types?: string[] | null;
 }
 
 export interface RemoveBreakpointParams {

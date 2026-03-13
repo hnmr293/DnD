@@ -37,6 +37,12 @@ public record GetExceptionResponse(
     [property: JsonPropertyName("innerException")] ExceptionInfo? InnerException = null
 );
 
+public record SetExceptionBreakpointsResponse(
+    [property: JsonPropertyName("thrown")] bool Thrown,
+    [property: JsonPropertyName("uncaught")] bool Uncaught,
+    [property: JsonPropertyName("types")] string[]? Types = null
+);
+
 public record EvaluateResponse(
     [property: JsonPropertyName("result")] string Result,
     [property: JsonPropertyName("variablesReference")] int VariablesReference,

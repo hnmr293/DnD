@@ -318,6 +318,83 @@ public class StubDebuggerEngineTests
         Assert.Equal(r1.Message, r2.Message);
     }
 
+    // === SetBreakpoint with condition/hitCount ===
+
+    [Fact]
+    public async Task SetBreakpoint_WithCondition_ReturnsCondition()
+    {
+        var result = await _engine.SetBreakpointAsync(
+            new SetBreakpointRequest(File: "a.cs", Line: 5, Condition: "x > 10"));
+        Assert.Equal("x > 10", result.Breakpoint.Condition);
+    }
+
+    [Fact]
+    public async Task SetBreakpoint_WithHitCount_ReturnsHitCount()
+    {
+        var result = await _engine.SetBreakpointAsync(
+            new SetBreakpointRequest(File: "a.cs", Line: 5, HitCount: 3));
+        Assert.Equal(3, result.Breakpoint.HitCount);
+    }
+
+    [Fact]
+    public async Task SetBreakpoint_WithBothConditionAndHitCount_ReturnsBoth()
+    {
+        var result = await _engine.SetBreakpointAsync(
+            new SetBreakpointRequest(File: "a.cs", Line: 5, Condition: "y == 0", HitCount: 5));
+        Assert.Equal("y == 0", result.Breakpoint.Condition);
+        Assert.Equal(5, result.Breakpoint.HitCount);
+    }
+
+    [Fact]
+    public async Task SetBreakpoint_NoConditionOrHitCount_BothNull()
+    {
+        var result = await _engine.SetBreakpointAsync(
+            new SetBreakpointRequest(File: "a.cs", Line: 5));
+        Assert.Null(result.Breakpoint.Condition);
+        Assert.Null(result.Breakpoint.HitCount);
+    }
+
+    // === SetExceptionBreakpoints ===
+
+    [Fact]
+    public async Task SetExceptionBreakpoints_DefaultSettings()
+    {
+        var result = await _engine.SetExceptionBreakpointsAsync(
+            new SetExceptionBreakpointsRequest());
+        Assert.False(result.Thrown);
+        Assert.True(result.Uncaught);
+        Assert.Null(result.Types);
+    }
+
+    [Fact]
+    public async Task SetExceptionBreakpoints_ThrownEnabled()
+    {
+        var result = await _engine.SetExceptionBreakpointsAsync(
+            new SetExceptionBreakpointsRequest(Thrown: true));
+        Assert.True(result.Thrown);
+        Assert.True(result.Uncaught);
+    }
+
+    [Fact]
+    public async Task SetExceptionBreakpoints_UncaughtDisabled()
+    {
+        var result = await _engine.SetExceptionBreakpointsAsync(
+            new SetExceptionBreakpointsRequest(Uncaught: false));
+        Assert.False(result.Thrown);
+        Assert.False(result.Uncaught);
+    }
+
+    [Fact]
+    public async Task SetExceptionBreakpoints_WithTypeFilter()
+    {
+        var result = await _engine.SetExceptionBreakpointsAsync(
+            new SetExceptionBreakpointsRequest(
+                Thrown: true, Types: ["ArgumentException", "InvalidOperation"]));
+        Assert.True(result.Thrown);
+        Assert.Equal(2, result.Types!.Length);
+        Assert.Contains("ArgumentException", result.Types);
+    }
+
     // === Corner cases: double/repeated calls ===
 
     [Fact]

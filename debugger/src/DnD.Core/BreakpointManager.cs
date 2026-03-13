@@ -16,7 +16,8 @@ public class BreakpointManager
         _modules = modules;
     }
 
-    public SetBreakpointResponse SetBreakpoint(string file, int line)
+    public SetBreakpointResponse SetBreakpoint(string file, int line,
+        string? condition = null, int? hitCount = null)
     {
         var normalizedFile = file.Replace('/', '\\');
 
@@ -27,14 +28,15 @@ public class BreakpointManager
             var sp = reader.ResolveBreakpoint(normalizedFile, line);
             if (sp == null) continue;
 
-            var bp = CreateBreakpoint(module, sp, file, line);
+            var bp = CreateBreakpoint(module, sp, file, line, condition, hitCount);
             if (bp != null) return bp;
         }
 
         var id = _nextId++;
-        _pending.Add(new PendingBreakpoint(id, file, line));
+        _pending.Add(new PendingBreakpoint(id, file, line, condition, hitCount));
         return new SetBreakpointResponse(
-            new Breakpoint(id, file, line, Verified: false));
+            new Breakpoint(id, file, line, Verified: false,
+                Condition: condition, HitCount: hitCount));
     }
 
     public void RemoveBreakpoint(int breakpointId)
@@ -53,9 +55,11 @@ public class BreakpointManager
     {
         var bps = new List<Breakpoint>();
         foreach (var (id, entry) in _breakpoints)
-            bps.Add(new Breakpoint(id, entry.File, entry.Line, Verified: true));
+            bps.Add(new Breakpoint(id, entry.File, entry.Line, Verified: true,
+                Condition: entry.Condition, HitCount: entry.HitCount));
         foreach (var pending in _pending)
-            bps.Add(new Breakpoint(pending.Id, pending.File, pending.Line, Verified: false));
+            bps.Add(new Breakpoint(pending.Id, pending.File, pending.Line, Verified: false,
+                Condition: pending.Condition, HitCount: pending.HitCount));
         return new GetBreakpointsResponse(bps.ToArray());
     }
 
@@ -78,7 +82,8 @@ public class BreakpointManager
                 corBp.Activate(true);
 
                 _breakpoints[pending.Id] = new BreakpointEntry(
-                    pending.File, sp.StartLine, corBp);
+                    pending.File, sp.StartLine, corBp,
+                    pending.Condition, pending.HitCount);
                 resolved.Add(pending);
             }
             catch { }
@@ -87,7 +92,8 @@ public class BreakpointManager
             _pending.Remove(r);
     }
 
-    private SetBreakpointResponse? CreateBreakpoint(CorDebugModule module, SequencePointInfo sp, string file, int line)
+    private SetBreakpointResponse? CreateBreakpoint(CorDebugModule module, SequencePointInfo sp,
+        string file, int line, string? condition = null, int? hitCount = null)
     {
         try
         {
@@ -97,32 +103,65 @@ public class BreakpointManager
             corBp.Activate(true);
 
             var id = _nextId++;
-            _breakpoints[id] = new BreakpointEntry(file, sp.StartLine, corBp);
+            _breakpoints[id] = new BreakpointEntry(file, sp.StartLine, corBp, condition, hitCount);
             return new SetBreakpointResponse(
-                new Breakpoint(id, file, sp.StartLine, Verified: true));
+                new Breakpoint(id, file, sp.StartLine, Verified: true,
+                    Condition: condition, HitCount: hitCount));
         }
         catch { return null; }
     }
 
     /// <summary>
-    /// Finds the user-assigned breakpoint ID for a given ICorDebug breakpoint
-    /// by comparing COM RCW identity (casting to object gives the same RCW instance
-    /// for the same underlying COM object, regardless of interface type).
+    /// Check if a breakpoint hit should stop execution.
+    /// Increments hit counter and checks hit count threshold.
+    /// Returns (shouldStop, breakpointId, condition).
     /// </summary>
-    public int? FindBreakpointId(CorDebugBreakpoint breakpoint)
+    public (bool ShouldStop, int? BreakpointId, string? Condition) CheckBreakpointHit(
+        CorDebugBreakpoint breakpoint)
     {
         foreach (var (id, entry) in _breakpoints)
         {
             try
             {
-                if (ReferenceEquals((object)entry.CorBreakpoint.Raw, (object)breakpoint.Raw))
-                    return id;
+                if (!ReferenceEquals((object)entry.CorBreakpoint.Raw, (object)breakpoint.Raw))
+                    continue;
+
+                // Hit count check
+                if (entry.HitCount.HasValue)
+                {
+                    entry.CurrentHits++;
+                    if (entry.CurrentHits < entry.HitCount.Value)
+                        return (false, id, null);
+                }
+
+                // Condition will be evaluated by DebuggerEngine
+                return (true, id, entry.Condition);
             }
             catch { }
         }
-        return null;
+        return (true, null, null);
     }
 
-    private record BreakpointEntry(string File, int Line, CorDebugFunctionBreakpoint CorBreakpoint);
-    private record PendingBreakpoint(int Id, string File, int Line);
+    private class BreakpointEntry
+    {
+        public string File { get; }
+        public int Line { get; }
+        public CorDebugFunctionBreakpoint CorBreakpoint { get; }
+        public string? Condition { get; }
+        public int? HitCount { get; }
+        public int CurrentHits { get; set; }
+
+        public BreakpointEntry(string file, int line, CorDebugFunctionBreakpoint corBreakpoint,
+            string? condition = null, int? hitCount = null)
+        {
+            File = file;
+            Line = line;
+            CorBreakpoint = corBreakpoint;
+            Condition = condition;
+            HitCount = hitCount;
+        }
+    }
+
+    private record PendingBreakpoint(int Id, string File, int Line,
+        string? Condition = null, int? HitCount = null);
 }

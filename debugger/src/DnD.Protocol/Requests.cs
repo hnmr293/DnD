@@ -35,11 +35,19 @@ public record StepOutRequest(
 // Breakpoints
 public record SetBreakpointRequest(
     [property: JsonPropertyName("file")] string File,
-    [property: JsonPropertyName("line")] int Line
+    [property: JsonPropertyName("line")] int Line,
+    [property: JsonPropertyName("condition")] string? Condition = null,
+    [property: JsonPropertyName("hitCount")] int? HitCount = null
 );
 
 public record RemoveBreakpointRequest(
     [property: JsonPropertyName("breakpointId")] int BreakpointId
+);
+
+public record SetExceptionBreakpointsRequest(
+    [property: JsonPropertyName("thrown")] bool Thrown = false,
+    [property: JsonPropertyName("uncaught")] bool Uncaught = true,
+    [property: JsonPropertyName("types")] string[]? Types = null
 );
 
 // Inspection

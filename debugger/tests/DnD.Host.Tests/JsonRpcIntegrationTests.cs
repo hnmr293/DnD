@@ -326,6 +326,50 @@ public class JsonRpcIntegrationTests : IAsyncLifetime
         Assert.Equal($"stub:{expr}", result.Result);
     }
 
+    // === Conditional/HitCount breakpoints ===
+
+    [Fact]
+    public async Task SetBreakpoint_WithCondition_PreservedThroughRpc()
+    {
+        var result = await _rpc!.InvokeWithParameterObjectAsync<SetBreakpointResponse>(
+            "setBreakpoint", new SetBreakpointRequest(
+                File: "a.cs", Line: 5, Condition: "x > 10"));
+        Assert.Equal("x > 10", result.Breakpoint.Condition);
+        Assert.Null(result.Breakpoint.HitCount);
+    }
+
+    [Fact]
+    public async Task SetBreakpoint_WithHitCount_PreservedThroughRpc()
+    {
+        var result = await _rpc!.InvokeWithParameterObjectAsync<SetBreakpointResponse>(
+            "setBreakpoint", new SetBreakpointRequest(
+                File: "a.cs", Line: 5, HitCount: 3));
+        Assert.Equal(3, result.Breakpoint.HitCount);
+        Assert.Null(result.Breakpoint.Condition);
+    }
+
+    // === Exception breakpoints ===
+
+    [Fact]
+    public async Task SetExceptionBreakpoints_DefaultSettings()
+    {
+        var result = await _rpc!.InvokeWithParameterObjectAsync<SetExceptionBreakpointsResponse>(
+            "setExceptionBreakpoints", new SetExceptionBreakpointsRequest());
+        Assert.False(result.Thrown);
+        Assert.True(result.Uncaught);
+    }
+
+    [Fact]
+    public async Task SetExceptionBreakpoints_ThrownEnabled_WithTypeFilter()
+    {
+        var result = await _rpc!.InvokeWithParameterObjectAsync<SetExceptionBreakpointsResponse>(
+            "setExceptionBreakpoints", new SetExceptionBreakpointsRequest(
+                Thrown: true, Types: ["ArgumentException"]));
+        Assert.True(result.Thrown);
+        Assert.True(result.Uncaught);
+        Assert.Single(result.Types!);
+    }
+
     // === Edge cases: boundary values ===
 
     [Fact]

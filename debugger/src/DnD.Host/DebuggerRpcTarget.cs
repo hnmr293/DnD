@@ -66,6 +66,10 @@ public class DebuggerRpcTarget
     public Task<GetBreakpointsResponse> GetBreakpoints()
         => _engine.GetBreakpointsAsync();
 
+    [JsonRpcMethod(UseSingleObjectParameterDeserialization = true)]
+    public Task<SetExceptionBreakpointsResponse> SetExceptionBreakpoints(SetExceptionBreakpointsRequest request)
+        => _engine.SetExceptionBreakpointsAsync(request);
+
     public Task Pause()
         => _engine.PauseAsync();
 
