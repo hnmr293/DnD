@@ -12,7 +12,10 @@ public class StubDebuggerEngine : IDebuggerEngine
 
     public event EventHandler<StoppedEventArgs>? Stopped;
     public event EventHandler<ExitedEventArgs>? Exited;
+    // Reserved for future use
+#pragma warning disable CS0067
     public event EventHandler<OutputEventArgs>? Output;
+#pragma warning restore CS0067
 
     public Task<LaunchResponse> LaunchAsync(LaunchRequest request)
         => Task.FromResult(new LaunchResponse(ProcessId: 12345));
