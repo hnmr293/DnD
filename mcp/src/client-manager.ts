@@ -14,7 +14,10 @@ function resolveHostPath(): string {
     return process.env.DND_HOST_PATH;
   }
   // Default: relative path from mcp/dist/ to debugger/src/DnD.Host/bin/Debug/net8.0-windows/DnD.Host.dll
-  return resolve(__dirname, "../../debugger/src/DnD.Host/bin/Debug/net8.0-windows/DnD.Host.dll");
+  return resolve(
+    __dirname,
+    "../../debugger/src/DnD.Host/bin/Debug/net8.0-windows/DnD.Host.dll",
+  );
 }
 
 export type DebuggerState = "not-started" | "running" | "stopped" | "exited";
@@ -119,7 +122,9 @@ export class ClientManager {
 
   getClient(): DebuggerClient {
     if (!this.client?.isConnected) {
-      throw new Error("No active debugger connection. Call launch or attach first.");
+      throw new Error(
+        "No active debugger connection. Call launch or attach first.",
+      );
     }
     return this.client;
   }
@@ -142,7 +147,11 @@ export class ClientManager {
   /** Clean up output file — called when starting a new session or on shutdown */
   private cleanupOutputFile(): void {
     if (this.outputFilePath) {
-      try { unlinkSync(this.outputFilePath); } catch { /* ignore */ }
+      try {
+        unlinkSync(this.outputFilePath);
+      } catch {
+        /* ignore */
+      }
       this.outputFilePath = null;
     }
     this._state = "not-started";

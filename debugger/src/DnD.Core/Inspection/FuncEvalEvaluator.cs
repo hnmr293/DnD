@@ -60,13 +60,11 @@ public class FuncEvalEvaluator
                 return ResolveVariable(name.Name);
 
             case MemberAccessNode member:
-                var obj = await EvalNodeAsync(member.Object);
-                if (obj == null) throw MakeError($"Cannot access '{member.MemberName}' on null");
+                var obj = await EvalNodeAsync(member.Object) ?? throw MakeError($"Cannot access '{member.MemberName}' on null");
                 return await ResolveMemberAsync(obj, member.MemberName);
 
             case MethodCallNode call:
-                var callObj = await EvalNodeAsync(call.Object);
-                if (callObj == null) throw MakeError($"Cannot call '{call.MethodName}' on null");
+                var callObj = await EvalNodeAsync(call.Object) ?? throw MakeError($"Cannot call '{call.MethodName}' on null");
                 var callArgs = new CorDebugValue[call.Arguments.Length];
                 for (int i = 0; i < call.Arguments.Length; i++)
                     callArgs[i] = await EvalNodeAsync(call.Arguments[i])
@@ -74,8 +72,7 @@ public class FuncEvalEvaluator
                 return await CallMethodAsync(callObj, call.MethodName, callArgs);
 
             case IndexAccessNode idx:
-                var idxObj = await EvalNodeAsync(idx.Object);
-                if (idxObj == null) throw MakeError("Cannot index null");
+                var idxObj = await EvalNodeAsync(idx.Object) ?? throw MakeError("Cannot index null");
                 var idxVal = await EvalNodeAsync(idx.Index);
                 return await IndexAccessAsync(idxObj, idxVal);
 

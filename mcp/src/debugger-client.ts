@@ -2,27 +2,55 @@ import { EventEmitter } from "node:events";
 import { spawn, type ChildProcess } from "node:child_process";
 import * as rpc from "vscode-jsonrpc/node.js";
 import {
-  LaunchRequest, AttachRequest, DetachRequest, TerminateRequest,
-  ContinueRequest, PauseRequest, StepInRequest, StepOverRequest, StepOutRequest,
-  SetBreakpointRequest, RemoveBreakpointRequest, GetBreakpointsRequest, SetExceptionBreakpointsRequest,
-  GetStackTraceRequest, GetVariablesRequest, EvaluateRequest,
-  GetThreadsRequest, GetExceptionRequest,
-  StoppedNotification, ExitedNotification, OutputNotification,
+  LaunchRequest,
+  AttachRequest,
+  DetachRequest,
+  TerminateRequest,
+  ContinueRequest,
+  PauseRequest,
+  StepInRequest,
+  StepOverRequest,
+  StepOutRequest,
+  SetBreakpointRequest,
+  RemoveBreakpointRequest,
+  GetBreakpointsRequest,
+  SetExceptionBreakpointsRequest,
+  GetStackTraceRequest,
+  GetVariablesRequest,
+  EvaluateRequest,
+  GetThreadsRequest,
+  GetExceptionRequest,
+  StoppedNotification,
+  ExitedNotification,
+  OutputNotification,
 } from "./types/rpc-methods.js";
 import type {
-  LaunchParams, LaunchResult,
-  AttachParams, AttachResult,
-  ContinueParams, StepInParams, StepOverParams, StepOutParams,
-  SetBreakpointParams, SetBreakpointResult,
+  LaunchParams,
+  LaunchResult,
+  AttachParams,
+  AttachResult,
+  ContinueParams,
+  StepInParams,
+  StepOverParams,
+  StepOutParams,
+  SetBreakpointParams,
+  SetBreakpointResult,
   RemoveBreakpointParams,
   GetBreakpointsResult,
-  SetExceptionBreakpointsParams, SetExceptionBreakpointsResult,
-  GetStackTraceParams, GetStackTraceResult,
-  GetVariablesParams, GetVariablesResult,
-  EvaluateParams, EvaluateResult,
+  SetExceptionBreakpointsParams,
+  SetExceptionBreakpointsResult,
+  GetStackTraceParams,
+  GetStackTraceResult,
+  GetVariablesParams,
+  GetVariablesResult,
+  EvaluateParams,
+  EvaluateResult,
   GetThreadsResult,
-  GetExceptionParams, GetExceptionResult,
-  StoppedParams, ExitedParams, OutputParams,
+  GetExceptionParams,
+  GetExceptionResult,
+  StoppedParams,
+  ExitedParams,
+  OutputParams,
 } from "./types/protocol.js";
 
 export interface DebuggerClientEvents {
@@ -45,12 +73,13 @@ export class DebuggerClient extends EventEmitter<DebuggerClientEvents> {
   }
 
   async start(): Promise<void> {
-    this.process = spawn("dotnet", [
-      this.hostPath, ...this.hostArgs,
-      "--parentPid", process.pid.toString(),
-    ], {
-      stdio: ["pipe", "pipe", "pipe"],
-    });
+    this.process = spawn(
+      "dotnet",
+      [this.hostPath, ...this.hostArgs, "--parentPid", process.pid.toString()],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
 
     this.process.stderr?.on("data", (data: Buffer) => {
       // DnD.Host writes diagnostic messages to stderr
@@ -126,7 +155,9 @@ export class DebuggerClient extends EventEmitter<DebuggerClientEvents> {
 
   // Breakpoints
 
-  async setBreakpoint(params: SetBreakpointParams): Promise<SetBreakpointResult> {
+  async setBreakpoint(
+    params: SetBreakpointParams,
+  ): Promise<SetBreakpointResult> {
     return this.sendRequest(SetBreakpointRequest, params);
   }
 
@@ -138,13 +169,17 @@ export class DebuggerClient extends EventEmitter<DebuggerClientEvents> {
     return this.sendRequest(GetBreakpointsRequest);
   }
 
-  async setExceptionBreakpoints(params: SetExceptionBreakpointsParams): Promise<SetExceptionBreakpointsResult> {
+  async setExceptionBreakpoints(
+    params: SetExceptionBreakpointsParams,
+  ): Promise<SetExceptionBreakpointsResult> {
     return this.sendRequest(SetExceptionBreakpointsRequest, params);
   }
 
   // Inspection
 
-  async getStackTrace(params: GetStackTraceParams): Promise<GetStackTraceResult> {
+  async getStackTrace(
+    params: GetStackTraceParams,
+  ): Promise<GetStackTraceResult> {
     return this.sendRequest(GetStackTraceRequest, params);
   }
 
@@ -183,7 +218,10 @@ export class DebuggerClient extends EventEmitter<DebuggerClientEvents> {
 
   // Private helpers
 
-  private sendRequest<P, R, E>(type: rpc.RequestType<P, R, E>, params: P): Promise<R>;
+  private sendRequest<P, R, E>(
+    type: rpc.RequestType<P, R, E>,
+    params: P,
+  ): Promise<R>;
   private sendRequest<R, E>(type: rpc.RequestType0<R, E>): Promise<R>;
   private sendRequest(type: any, params?: any): Promise<any> {
     if (!this.connection) {

@@ -486,10 +486,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
 
         try
         {
-            var exValue = thread.CurrentException;
-            if (exValue == null)
-                throw new LocalRpcException("No current exception") { ErrorCode = ErrorCodes.EvaluationFailed };
-
+            var exValue = thread.CurrentException ?? throw new LocalRpcException("No current exception") { ErrorCode = ErrorCodes.EvaluationFailed };
             CorDebugValue value = exValue;
             if (value is CorDebugReferenceValue refVal)
             {
@@ -882,8 +879,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
             var thread = _stoppedThread;
             if (thread != null)
             {
-                var activeFrame = thread.ActiveFrame as CorDebugILFrame;
-                if (activeFrame != null && !_frameMap.ContainsKey(0))
+                if (thread.ActiveFrame is CorDebugILFrame activeFrame && !_frameMap.ContainsKey(0))
                 {
                     _frameMap[0] = activeFrame;
                     _nextFrameId = 1;
@@ -953,8 +949,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
             if (currentFrame == null) return;
 
             // Get the caller frame — this is where the call instruction is
-            var callerFrame = currentFrame.Caller as CorDebugILFrame;
-            if (callerFrame == null) return;
+            if (currentFrame.Caller is not CorDebugILFrame callerFrame) return;
 
             var callILOffset = (int)callerFrame.IP.pnOffset;
 
@@ -1015,8 +1010,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         if (_returnValueBreakpoints == null) return;
         try
         {
-            var frame = thread.ActiveFrame as CorDebugILFrame;
-            if (frame == null) return;
+            if (thread.ActiveFrame is not CorDebugILFrame frame) return;
 
             var retHr = frame.TryGetReturnValueForILOffset(_returnValueCallILOffset, out var retVal);
             if (retHr == ClrDebug.HRESULT.S_OK && retVal != null)

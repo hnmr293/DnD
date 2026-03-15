@@ -1,17 +1,29 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ClientManager } from "../client-manager.js";
-import { waitForStopOrExit, formatStoppedResponse, formatExitedResponse } from "./execution.js";
+import {
+  waitForStopOrExit,
+  formatStoppedResponse,
+  formatExitedResponse,
+} from "./execution.js";
 
-export function registerProcessTools(server: McpServer, clientManager: ClientManager) {
+export function registerProcessTools(
+  server: McpServer,
+  clientManager: ClientManager,
+) {
   server.tool(
     "launch",
     "Launch a .NET program under the debugger. Must be called before any other debugging operation. The response includes the path to a log file containing all program output (stdout/stderr) — use the Read tool to view it.",
     {
-      program: z.string().describe("Path to the .NET executable or DLL to debug"),
+      program: z
+        .string()
+        .describe("Path to the .NET executable or DLL to debug"),
       args: z.array(z.string()).optional().describe("Command-line arguments"),
       cwd: z.string().optional().describe("Working directory"),
-      env: z.record(z.string(), z.string()).optional().describe("Environment variables"),
+      env: z
+        .record(z.string(), z.string())
+        .optional()
+        .describe("Environment variables"),
       stopAtEntry: z.boolean().optional().describe("Stop at the entry point"),
     },
     async (params) => {
@@ -26,10 +38,17 @@ export function registerProcessTools(server: McpServer, clientManager: ClientMan
         : "";
 
       if (event.type === "stopped") {
-        const { stackFrames } = await client.getStackTrace({ threadId: event.params.threadId });
+        const { stackFrames } = await client.getStackTrace({
+          threadId: event.params.threadId,
+        });
         const topFrame = stackFrames.length > 0 ? stackFrames[0] : null;
         return {
-          content: [{ type: "text" as const, text: formatStoppedResponse(event.params, topFrame) + outputLine }],
+          content: [
+            {
+              type: "text" as const,
+              text: formatStoppedResponse(event.params, topFrame) + outputLine,
+            },
+          ],
         };
       }
 
@@ -39,7 +58,7 @@ export function registerProcessTools(server: McpServer, clientManager: ClientMan
       return {
         content: [{ type: "text" as const, text: exitText }],
       };
-    }
+    },
   );
 
   server.tool(
@@ -55,9 +74,14 @@ export function registerProcessTools(server: McpServer, clientManager: ClientMan
         ? `\nOutput file: ${clientManager.outputFile}`
         : "";
       return {
-        content: [{ type: "text" as const, text: `Attached to process ${result.processId}${outputLine}` }],
+        content: [
+          {
+            type: "text" as const,
+            text: `Attached to process ${result.processId}${outputLine}`,
+          },
+        ],
       };
-    }
+    },
   );
 
   server.tool(
@@ -70,21 +94,17 @@ export function registerProcessTools(server: McpServer, clientManager: ClientMan
       return {
         content: [{ type: "text" as const, text: "Detached from process" }],
       };
-    }
+    },
   );
 
-  server.tool(
-    "terminate",
-    "Terminate the debugged process.",
-    async () => {
-      const client = clientManager.getClient();
-      await client.terminate();
-      await clientManager.dispose();
-      return {
-        content: [{ type: "text" as const, text: "Process terminated" }],
-      };
-    }
-  );
+  server.tool("terminate", "Terminate the debugged process.", async () => {
+    const client = clientManager.getClient();
+    await client.terminate();
+    await clientManager.dispose();
+    return {
+      content: [{ type: "text" as const, text: "Process terminated" }],
+    };
+  });
 
   server.tool(
     "getState",
@@ -110,6 +130,6 @@ export function registerProcessTools(server: McpServer, clientManager: ClientMan
       return {
         content: [{ type: "text" as const, text }],
       };
-    }
+    },
   );
 }

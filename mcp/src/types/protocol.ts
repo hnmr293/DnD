@@ -36,7 +36,12 @@ export interface ExceptionInfo {
   message?: string | null;
 }
 
-export type StopReason = "breakpoint" | "step" | "pause" | "exception" | "entry";
+export type StopReason =
+  | "breakpoint"
+  | "step"
+  | "pause"
+  | "exception"
+  | "entry";
 export type OutputCategory = "stdout" | "stderr" | "console";
 
 // === Request Params ===
