@@ -1160,6 +1160,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         _frameMap.Clear();
         _nextFrameId = 0;
         _lastReturnValue = null;
+        _suppressNextStepCallback = false;
     }
 
     private void RefreshFrameMap()
