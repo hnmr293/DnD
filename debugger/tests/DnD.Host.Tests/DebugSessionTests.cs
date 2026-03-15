@@ -237,7 +237,7 @@ public class DebugSessionTests : DebugTestBase
         var sourceFile = FindFixtureSrc("BreakpointTest", "Program.cs");
 
         var bp = await Rpc!.InvokeWithParameterObjectAsync<SetBreakpointResponse>(
-            "setBreakpoint", new SetBreakpointRequest(File: sourceFile, Line: 3));
+            "setBreakpoint", new SetBreakpointRequest(File: sourceFile, Line: 7));
 
         await Rpc!.InvokeWithParameterObjectAsync<LaunchResponse>(
             "launch", new LaunchRequest(Program: program));
@@ -299,9 +299,9 @@ public class DebugSessionTests : DebugTestBase
         var program = FindFixture("SteppingTest");
         var sourceFile = FindFixtureSrc("SteppingTest", "Program.cs");
 
-        // Set breakpoint on Outer() call (line 12)
+        // Set breakpoint on Outer() call (line 18)
         await Rpc!.InvokeWithParameterObjectAsync<SetBreakpointResponse>(
-            "setBreakpoint", new SetBreakpointRequest(File: sourceFile, Line: 12));
+            "setBreakpoint", new SetBreakpointRequest(File: sourceFile, Line: 18));
 
         await Rpc!.InvokeWithParameterObjectAsync<LaunchResponse>(
             "launch", new LaunchRequest(Program: program));

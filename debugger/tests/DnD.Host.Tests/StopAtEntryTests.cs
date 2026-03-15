@@ -118,7 +118,7 @@ public class StopAtEntryTests : DebugTestBase
         var sourceFile = FindFixtureSrc("BreakpointTest", "Program.cs");
 
         await Rpc!.InvokeWithParameterObjectAsync<SetBreakpointResponse>(
-            "setBreakpoint", new SetBreakpointRequest(File: sourceFile, Line: 3));
+            "setBreakpoint", new SetBreakpointRequest(File: sourceFile, Line: 7));
 
         await Rpc!.InvokeWithParameterObjectAsync<LaunchResponse>(
             "launch", new LaunchRequest(Program: program, StopAtEntry: true));

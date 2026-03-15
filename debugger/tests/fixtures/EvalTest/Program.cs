@@ -1,9 +1,19 @@
-var greeting = "Hello, World!";
-var number = 42;
-var list = new List<int> { 1, 2, 3 };
-var obj = new TestClass("test", 100);
-System.Diagnostics.Debugger.Break();
-Console.WriteLine($"{greeting} {number} {list.Count} {obj}");
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        var greeting = "Hello, World!";
+        var number = 42;
+        var list = new List<int> { 1, 2, 3 };
+        var obj = new TestClass("test", 100);
+        Debugger.Break();
+        Console.WriteLine($"{greeting} {number} {list.Count} {obj}");
+    }
+}
 
 class TestClass
 {

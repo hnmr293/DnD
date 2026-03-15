@@ -1,12 +1,20 @@
-static void Inner()
-{
-    Console.WriteLine("inner");  // stepIn enters here
-}
+using System;
 
-static void Outer()
+class Program
 {
-    Inner();                      // stepOver skips this
-    Console.WriteLine("outer");
-}
+    static void Inner()
+    {
+        Console.WriteLine("inner");  // stepIn enters here
+    }
 
-Outer();
+    static void Outer()
+    {
+        Inner();                      // stepOver skips this
+        Console.WriteLine("outer");
+    }
+
+    static void Main(string[] args)
+    {
+        Outer();
+    }
+}

@@ -83,15 +83,19 @@ public abstract class DebugTestBase : IAsyncLifetime
         StoppedQueue.Dispose();
     }
 
+    protected virtual string TargetFramework => "net10.0";
+
     protected StoppedNotification WaitForStopped(TimeSpan? timeout = null)
     {
         var cts = new CancellationTokenSource(timeout ?? TimeSpan.FromSeconds(15));
         return StoppedQueue.Take(cts.Token);
     }
 
-    protected static string FindFixture(string name)
+    protected string FindFixture(string name)
     {
-        var fixturePath = FindPath($"tests/fixtures/{name}/bin/Debug/net10.0/{name}.dll");
+        var tfm = TargetFramework;
+        var ext = tfm.StartsWith("net4") ? ".exe" : ".dll";
+        var fixturePath = FindPath($"tests/fixtures/{name}/bin/Debug/{tfm}/{name}{ext}");
         if (!File.Exists(fixturePath))
             throw new FileNotFoundException($"Fixture not built: {fixturePath}");
         return fixturePath;
