@@ -9,8 +9,7 @@ public class FrameworkProcessLauncher : IProcessLauncher
         Dictionary<string, string>? env,
         CorDebugManagedCallback callback)
     {
-        var corDebug = new CorDebug();
-        corDebug.Initialize();
+        var corDebug = CreateCorDebugForFramework();
         corDebug.SetManagedHandler(callback);
 
         var commandLine = BuildCommandLine(program, args);
@@ -38,14 +37,28 @@ public class FrameworkProcessLauncher : IProcessLauncher
         int processId,
         CorDebugManagedCallback callback)
     {
-        var corDebug = new CorDebug();
-        corDebug.Initialize();
+        var corDebug = CreateCorDebugForFramework();
         corDebug.SetManagedHandler(callback);
 
         corDebug.DebugActiveProcess(processId, false);
         var process = corDebug.GetProcess(processId);
 
         return new LaunchResult(corDebug, process);
+    }
+
+    /// <summary>
+    /// Creates an ICorDebug instance for .NET Framework 4.x by explicitly requesting
+    /// the v4.0 runtime via CLRMetaHost. The parameterless CorDebug() constructor
+    /// tries to get the CLR for the current process (which is .NET 8), so we must
+    /// use the CLRCreateInstance → GetRuntime → GetInterface path instead.
+    /// </summary>
+    private static CorDebug CreateCorDebugForFramework()
+    {
+        var metaHost = Extensions.CLRCreateInstance().CLRMetaHost;
+        var runtimeInfo = metaHost.GetRuntime("v4.0.30319");
+        var corDebug = runtimeInfo.GetInterface().CorDebug;
+        corDebug.Initialize();
+        return corDebug;
     }
 
     private static string BuildCommandLine(string program, string[]? args)
