@@ -1,6 +1,11 @@
 import { resolve, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { createWriteStream, unlinkSync, type WriteStream } from "node:fs";
+import {
+  createWriteStream,
+  existsSync,
+  unlinkSync,
+  type WriteStream,
+} from "node:fs";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { DebuggerClient } from "./debugger-client.js";
@@ -9,14 +14,17 @@ import type { StoppedParams, ExitedParams } from "./types/protocol.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function resolveHostPath(): string {
-  // Environment variable takes priority
+  // 1. Environment variable (development override)
   if (process.env.DND_HOST_PATH) {
     return process.env.DND_HOST_PATH;
   }
-  // Default: relative path from mcp/dist/ to debugger/src/DnD.Host/bin/Debug/net8.0-windows/DnD.Host.dll
-  return resolve(
-    __dirname,
-    "../../debugger/src/DnD.Host/bin/Debug/net8.0-windows/DnD.Host.dll",
+  // 2. Bundled binary (npm package)
+  const bundledPath = resolve(__dirname, "../bin/DnD.Host.dll");
+  if (existsSync(bundledPath)) {
+    return bundledPath;
+  }
+  throw new Error(
+    "DnD.Host.dll not found. Set DND_HOST_PATH environment variable or install the package with bundled binaries.",
   );
 }
 

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "dnd": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["dnd-mcp"]
+    }
+  }
+}
