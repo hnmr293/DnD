@@ -23,7 +23,7 @@ public class FrameworkProcessLauncher : IProcessLauncher
             lpProcessAttributes: default,
             lpThreadAttributes: default,
             bInheritHandles: false,
-            dwCreationFlags: CreateProcessFlags.CREATE_NEW_CONSOLE,
+            dwCreationFlags: CreateProcessFlags.CREATE_NO_WINDOW,
             lpEnvironment: IntPtr.Zero,
             lpCurrentDirectory: cwd,
             lpStartupInfo: startupInfo,

@@ -26,19 +26,13 @@ public class CoreProcessLauncher : IProcessLauncher
     {
         var commandLine = BuildCommandLine(program, args);
 
-        // DbgShim's CreateProcessForLaunch calls Win32 CreateProcess which inherits
-        // the parent's std handles. When DnD.Host uses stdin/stdout for JSON-RPC,
-        // the debuggee's Console.WriteLine would corrupt the protocol stream.
-        // Redirect the child's stdout/stderr to anonymous pipes we can read from.
-        var (launchResultValue, stdoutRead, stderrRead) = CreateProcessWithCapturedOutput(commandLine, cwd);
-
-        var pid = launchResultValue.ProcessId;
-        var resumeHandle = launchResultValue.ResumeHandle;
+        var (pid, hThread, hProcess, stdoutRead, stderrRead) =
+            CreateProcessWithCapturedOutput(commandLine, cwd);
 
         var tcs = new TaskCompletionSource<CorDebug>();
 
         var unregisterToken = _dbgShim.RegisterForRuntimeStartup(
-            (int)pid,
+            pid,
             (pCordb, parameter, hr) =>
             {
                 if (hr == HRESULT.S_OK && pCordb != null)
@@ -53,24 +47,26 @@ public class CoreProcessLauncher : IProcessLauncher
             },
             IntPtr.Zero);
 
-        _dbgShim.ResumeProcess(resumeHandle);
+        ResumeThread(hThread);
 
         // Wait for the runtime to start (with timeout)
         if (!tcs.Task.Wait(TimeSpan.FromSeconds(30)))
         {
             _dbgShim.UnregisterForRuntimeStartup(unregisterToken);
-            _dbgShim.CloseResumeHandle(resumeHandle);
+            CloseHandle(hThread);
+            CloseHandle(hProcess);
             throw new TimeoutException("Timed out waiting for .NET runtime to start.");
         }
 
         _dbgShim.UnregisterForRuntimeStartup(unregisterToken);
-        _dbgShim.CloseResumeHandle(resumeHandle);
+        CloseHandle(hThread);
+        CloseHandle(hProcess);
 
         var corDebug = tcs.Task.Result;
         corDebug.Initialize();
         corDebug.SetManagedHandler(callback);
 
-        var process = corDebug.DebugActiveProcess((int)pid, false);
+        var process = corDebug.DebugActiveProcess(pid, false);
 
         return new LaunchResult(corDebug, process, stdoutRead, stderrRead);
     }
@@ -151,44 +147,47 @@ public class CoreProcessLauncher : IProcessLauncher
 
     /// <summary>
     /// Creates the debuggee process with stdout/stderr redirected to anonymous pipes.
-    /// Returns the pipe read-end streams so the caller can capture output.
-    /// Stdin is redirected to NUL (debuggees don't read interactive input during debugging).
+    /// Uses CreateProcessW directly (instead of DbgShim.CreateProcessForLaunch) to
+    /// control creation flags — CREATE_NO_WINDOW prevents console windows from appearing.
+    /// STARTF_USESTDHANDLES passes the pipe handles to the child process.
     /// </summary>
-    private (CreateProcessForLaunchResult Result, Stream StdoutRead, Stream StderrRead)
+    private (int ProcessId, IntPtr ThreadHandle, IntPtr ProcessHandle, Stream StdoutRead, Stream StderrRead)
         CreateProcessWithCapturedOutput(string commandLine, string? cwd)
     {
-        const int STD_INPUT_HANDLE = -10;
-        const int STD_OUTPUT_HANDLE = -11;
-        const int STD_ERROR_HANDLE = -12;
-
-        var origStdin = GetStdHandle(STD_INPUT_HANDLE);
-        var origStdout = GetStdHandle(STD_OUTPUT_HANDLE);
-        var origStderr = GetStdHandle(STD_ERROR_HANDLE);
-
-        // AnonymousPipeServerStream(PipeDirection.In) creates:
-        //   server end = read (our side), client end = write (child side)
         var stdoutPipe = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.Inheritable);
         var stderrPipe = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.Inheritable);
 
-        // NUL for stdin
+        // NUL for stdin — mark inheritable so the child can use it
         using var nulFile = File.OpenHandle("NUL", FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
         var nulHandle = nulFile.DangerousGetHandle();
+        SetHandleInformation(nulHandle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
 
         try
         {
-            // Replace std handles so the child inherits our pipe write-ends
-            SetStdHandle(STD_INPUT_HANDLE, nulHandle);
-            SetStdHandle(STD_OUTPUT_HANDLE, stdoutPipe.ClientSafePipeHandle.DangerousGetHandle());
-            SetStdHandle(STD_ERROR_HANDLE, stderrPipe.ClientSafePipeHandle.DangerousGetHandle());
+            var startupInfo = new STARTUPINFOW();
+            startupInfo.cb = Marshal.SizeOf<STARTUPINFOW>();
+            startupInfo.dwFlags = STARTF.STARTF_USESTDHANDLES;
+            startupInfo.hStdInput = nulHandle;
+            startupInfo.hStdOutput = stdoutPipe.ClientSafePipeHandle.DangerousGetHandle();
+            startupInfo.hStdError = stderrPipe.ClientSafePipeHandle.DangerousGetHandle();
 
-            var result = _dbgShim.CreateProcessForLaunch(
+            if (!CreateProcessW(
+                null,
                 commandLine,
-                bSuspendProcess: true,
-                lpEnvironment: IntPtr.Zero,
-                lpCurrentDirectory: cwd);
+                IntPtr.Zero,
+                IntPtr.Zero,
+                true,
+                CreateProcessFlags.CREATE_NO_WINDOW | CreateProcessFlags.CREATE_SUSPENDED,
+                IntPtr.Zero,
+                cwd,
+                ref startupInfo,
+                out var processInfo))
+            {
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            }
 
-            // Return the server (read) ends — these are the streams we'll read from
-            return (result, stdoutPipe, stderrPipe);
+            return (processInfo.dwProcessId, processInfo.hThread, processInfo.hProcess,
+                stdoutPipe, stderrPipe);
         }
         catch
         {
@@ -198,11 +197,6 @@ public class CoreProcessLauncher : IProcessLauncher
         }
         finally
         {
-            // Restore original handles for DnD.Host's own stdio
-            SetStdHandle(STD_INPUT_HANDLE, origStdin);
-            SetStdHandle(STD_OUTPUT_HANDLE, origStdout);
-            SetStdHandle(STD_ERROR_HANDLE, origStderr);
-
             // Close the write-end handles in our process — only the child holds them now.
             // This ensures ReadLine() on the server end will return null when the child exits.
             stdoutPipe.DisposeLocalCopyOfClientHandle();
@@ -210,11 +204,29 @@ public class CoreProcessLauncher : IProcessLauncher
         }
     }
 
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern IntPtr GetStdHandle(int nStdHandle);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessW(
+        string? lpApplicationName,
+        string lpCommandLine,
+        IntPtr lpProcessAttributes,
+        IntPtr lpThreadAttributes,
+        bool bInheritHandles,
+        CreateProcessFlags dwCreationFlags,
+        IntPtr lpEnvironment,
+        string? lpCurrentDirectory,
+        ref STARTUPINFOW lpStartupInfo,
+        out PROCESS_INFORMATION lpProcessInformation);
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool SetStdHandle(int nStdHandle, IntPtr hHandle);
+    private static extern int ResumeThread(IntPtr hThread);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetHandleInformation(IntPtr hObject, int dwMask, int dwFlags);
+
+    private const int HANDLE_FLAG_INHERIT = 0x00000001;
 
     private static string BuildCommandLine(string program, string[]? args)
     {
