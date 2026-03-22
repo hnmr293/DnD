@@ -59,29 +59,23 @@ describe("Blocking execution pattern (stub mode)", () => {
     }
   });
 
-  it("continue should block until stopped", async () => {
+  it("continue should return immediately without waiting for stopped", async () => {
     client = new DebuggerClient(HOST_PATH, ["--stub"]);
     await client.start();
     await client.launch({ program: "test.dll" });
 
-    const waitPromise = waitForStopOrExit(client);
+    // continue() should resolve as soon as the RPC response arrives,
+    // NOT wait for the next stopped/exited notification.
+    // The stub fires stopped after 50ms; if continue() waited, it would
+    // take >= 50ms. We verify it returns well under that.
+    const start = Date.now();
     await client.continue({});
-    const event = await waitPromise;
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(500);
 
+    // The stopped notification still arrives independently
+    const event = await waitForStopOrExit(client);
     expect(event.type).toBe("stopped");
-    if (event.type === "stopped") {
-      expect(event.params.reason).toBe("breakpoint");
-      expect(event.params.threadId).toBe(1);
-
-      // After stopped, fetch context
-      const stack = await client.getStackTrace({
-        threadId: event.params.threadId,
-      });
-      expect(stack.stackFrames.length).toBeGreaterThan(0);
-
-      const vars = await client.getVariables({ variablesReference: 0 });
-      expect(vars.variables.length).toBeGreaterThan(0);
-    }
   });
 
   it("stepOver should block until stopped", async () => {

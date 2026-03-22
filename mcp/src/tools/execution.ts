@@ -164,11 +164,11 @@ export function registerExecutionTools(
     },
     async (params) => {
       const client = clientManager.getClient();
-      return handleExecution(
-        client,
-        () => client.continue(params),
-        clientManager,
-      );
+      await client.continue(params);
+      clientManager.markRunning();
+      return {
+        content: [{ type: "text" as const, text: "Process running" }],
+      };
     },
   );
 
