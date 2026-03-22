@@ -103,6 +103,23 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         if (_state == DebuggerState.Terminated || _state == DebuggerState.NotStarted)
             return Task.CompletedTask;
 
+        // Deactivate all breakpoints before detaching
+        _breakpointManager.DeactivateAll();
+
+        // If stopped at a callback boundary, resume first.
+        // Continue(false) alone is not enough — queued callbacks may immediately
+        // re-stop the process at a new callback boundary (CORDBG_E_PROCESS_NOT_SYNCHRONIZED).
+        if (_state == DebuggerState.Stopped)
+        {
+            try { _process?.Continue(false); }
+            catch { }
+        }
+
+        // Stop() drains queued callbacks (auto-continued by the handler) and puts
+        // the process in a controlled stop state where Detach() can succeed.
+        try { _process?.Stop(5000); }
+        catch { }
+
         try { _process?.Detach(); }
         catch { }
 

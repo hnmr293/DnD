@@ -39,6 +39,19 @@ public class BreakpointManager
                 Condition: condition, HitCount: hitCount));
     }
 
+    /// <summary>
+    /// Deactivate all breakpoints without removing them from tracking.
+    /// Used before detach to ensure the debuggee can run cleanly.
+    /// </summary>
+    public void DeactivateAll()
+    {
+        foreach (var (_, entry) in _breakpoints)
+        {
+            try { entry.CorBreakpoint.Activate(false); }
+            catch { }
+        }
+    }
+
     public void RemoveBreakpoint(int breakpointId)
     {
         if (_breakpoints.TryGetValue(breakpointId, out var entry))
