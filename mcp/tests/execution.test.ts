@@ -6,14 +6,23 @@ import type { StoppedParams, ExitedParams } from "../src/types/protocol.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const HOST_PATH = process.env.DND_HOST_PATH
-  ?? resolve(__dirname, "../../debugger/src/DnD.Host/bin/Debug/net8.0-windows/DnD.Host.dll");
+const HOST_PATH =
+  process.env.DND_HOST_PATH ??
+  resolve(
+    __dirname,
+    "../../debugger/src/DnD.Host/bin/Debug/net8.0-windows/DnD.Host.dll",
+  );
 
 /**
  * Simulates the blocking execution pattern used by MCP tools:
  * Register listeners BEFORE sending the action, then wait for stopped/exited.
  */
-function waitForStopOrExit(client: DebuggerClient): Promise<{ type: "stopped"; params: StoppedParams } | { type: "exited"; params: ExitedParams }> {
+function waitForStopOrExit(
+  client: DebuggerClient,
+): Promise<
+  | { type: "stopped"; params: StoppedParams }
+  | { type: "exited"; params: ExitedParams }
+> {
   return new Promise((resolve, reject) => {
     let resolved = false;
     const cleanup = () => {
@@ -65,7 +74,9 @@ describe("Blocking execution pattern (stub mode)", () => {
       expect(event.params.threadId).toBe(1);
 
       // After stopped, fetch context
-      const stack = await client.getStackTrace({ threadId: event.params.threadId });
+      const stack = await client.getStackTrace({
+        threadId: event.params.threadId,
+      });
       expect(stack.stackFrames.length).toBeGreaterThan(0);
 
       const vars = await client.getVariables({ variablesReference: 0 });
@@ -169,7 +180,9 @@ describe("Blocking execution pattern (stub mode)", () => {
 
     if (event1.type === "stopped") {
       // Inspect state
-      const stack = await client.getStackTrace({ threadId: event1.params.threadId });
+      const stack = await client.getStackTrace({
+        threadId: event1.params.threadId,
+      });
       expect(stack.stackFrames.length).toBeGreaterThan(0);
 
       const vars = await client.getVariables({ variablesReference: 0 });

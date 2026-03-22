@@ -7,8 +7,12 @@ import type { StoppedParams, ExitedParams } from "../src/types/protocol.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Resolve DnD.Host.dll — uses DND_HOST_PATH env or default build output
-const HOST_PATH = process.env.DND_HOST_PATH
-  ?? resolve(__dirname, "../../debugger/src/DnD.Host/bin/Debug/net8.0-windows/DnD.Host.dll");
+const HOST_PATH =
+  process.env.DND_HOST_PATH ??
+  resolve(
+    __dirname,
+    "../../debugger/src/DnD.Host/bin/Debug/net8.0-windows/DnD.Host.dll",
+  );
 
 describe("DebuggerClient (stub mode)", () => {
   let client: DebuggerClient;
@@ -131,15 +135,19 @@ describe("DebuggerClient (stub mode)", () => {
   it("should throw when calling method before start", async () => {
     client = new DebuggerClient(HOST_PATH, ["--stub"]);
     // Not started — should throw "Not connected"
-    await expect(client.launch({ program: "test.dll" }))
-      .rejects.toThrow("Not connected");
+    await expect(client.launch({ program: "test.dll" })).rejects.toThrow(
+      "Not connected",
+    );
   });
 
   it("should handle unicode file paths in breakpoints", async () => {
     client = new DebuggerClient(HOST_PATH, ["--stub"]);
     await client.start();
 
-    const result = await client.setBreakpoint({ file: "ソース/テスト.cs", line: 1 });
+    const result = await client.setBreakpoint({
+      file: "ソース/テスト.cs",
+      line: 1,
+    });
     expect(result.breakpoint.file).toBe("ソース/テスト.cs");
   });
 
