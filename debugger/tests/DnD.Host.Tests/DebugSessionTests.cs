@@ -449,13 +449,16 @@ public class DebugSessionTests : DebugTestBase
 
         // Grab a process handle before detach — the debuggee may exit immediately
         // after detach, and GetProcessById would throw if it's already gone.
+        // EnableRaisingEvents opens an internal handle with sufficient access rights
+        // for ExitCode to work (plain GetProcessById does not).
         using var proc = System.Diagnostics.Process.GetProcessById(launch.ProcessId);
+        proc.EnableRaisingEvents = true;
 
         // Detach while stopped at breakpoint — must not throw
         await Rpc!.InvokeAsync("detach");
 
-        // Debuggee should resume and exit normally (not crash)
-        await proc.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        // Debuggee should resume and exit normally (not crash/hang)
+        Assert.True(proc.WaitForExit(10_000), "Debuggee did not exit within timeout");
         Assert.Equal(0, proc.ExitCode);
     }
 
