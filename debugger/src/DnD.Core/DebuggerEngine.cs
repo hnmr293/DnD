@@ -777,6 +777,16 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
                 if (_exitedEventFired) return;
                 _exitedEventFired = true;
             }
+
+            // Release module resources to unlock DLL files
+            foreach (var (_, (_, reader)) in _modules)
+                reader?.Dispose();
+            _modules.Clear();
+
+            try { _corDebug?.Terminate(); }
+            catch { }
+            _corDebug = null;
+
             Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(exitCode)));
         };
 

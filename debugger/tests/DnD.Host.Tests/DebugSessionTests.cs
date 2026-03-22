@@ -426,6 +426,84 @@ public class DebugSessionTests : DebugTestBase
         await Rpc!.InvokeAsync("detach");
     }
 
+    /// <summary>
+    /// Regression: Detach while stopped at a breakpoint previously failed with
+    /// CORDBG_E_PROCESS_NOT_SYNCHRONIZED because queued ICorDebug callbacks
+    /// re-stopped the process between Continue(false) and Detach().
+    /// Fix: Continue → Stop(5000) → Detach drains the callback queue first.
+    /// </summary>
+    [Fact]
+    public async Task Detach_WhileStoppedAtBreakpoint_DebuggeeExitsNormally()
+    {
+        var program = FindFixture("BreakpointTest");
+        var sourceFile = FindFixtureSrc("BreakpointTest", "Program.cs");
+
+        await Rpc!.InvokeWithParameterObjectAsync<SetBreakpointResponse>(
+            "setBreakpoint", new SetBreakpointRequest(File: sourceFile, Line: 7));
+
+        var launch = await Rpc!.InvokeWithParameterObjectAsync<LaunchResponse>(
+            "launch", new LaunchRequest(Program: program));
+
+        var stopped = WaitForStopped();
+        Assert.Equal(StopReason.Breakpoint, stopped.Reason);
+
+        // Grab a process handle before detach — the debuggee may exit immediately
+        // after detach, and GetProcessById would throw if it's already gone.
+        using var proc = System.Diagnostics.Process.GetProcessById(launch.ProcessId);
+
+        // Detach while stopped at breakpoint — must not throw
+        await Rpc!.InvokeAsync("detach");
+
+        // Debuggee should resume and exit normally (not crash)
+        await proc.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(0, proc.ExitCode);
+    }
+
+    /// <summary>
+    /// Regression: After the debuggee exited, the debugger Host kept ISymbolReader
+    /// locks on PDB/DLL files because OnProcessExited did not dispose module resources.
+    /// Fix: OnProcessExited now disposes readers and terminates ICorDebug.
+    /// </summary>
+    [Fact]
+    public async Task ProcessExit_ReleasesModuleLocks()
+    {
+        var program = FindFixture("HelloWorld");
+        var programDir = Path.GetDirectoryName(program)!;
+
+        // Copy fixture to temp so we can test file locking without affecting build output
+        var tempDir = Path.Combine(Path.GetTempPath(), $"dnd-lock-test-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            foreach (var file in Directory.GetFiles(programDir))
+                File.Copy(file, Path.Combine(tempDir, Path.GetFileName(file)));
+
+            var tempProgram = Path.Combine(tempDir, Path.GetFileName(program));
+
+            await Rpc!.InvokeWithParameterObjectAsync<LaunchResponse>(
+                "launch", new LaunchRequest(Program: tempProgram));
+
+            // Wait for natural exit
+            var exited = await ExitedTcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(0, exited.ExitCode);
+
+            // Verify PDB file is not locked by the debugger Host
+            var pdbFile = Path.Combine(tempDir,
+                Path.GetFileNameWithoutExtension(program) + ".pdb");
+            if (File.Exists(pdbFile))
+            {
+                // Opening exclusively would throw if still locked
+                using var fs = File.Open(pdbFile, FileMode.Open,
+                    FileAccess.ReadWrite, FileShare.None);
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, true); }
+            catch { }
+        }
+    }
+
     // === StepOut ===
 
     [Fact]
