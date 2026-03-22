@@ -24,7 +24,7 @@
     "csharp",
     "model-context-protocol"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "scripts": {
     "build": "tsc",
     "build:host": "dotnet publish ../debugger/src/DnD.Host/DnD.Host.csproj -c Release -o ./bin",
