@@ -107,13 +107,13 @@ public class ManagedCallbackHandler
                     typeName.IndexOf(t, StringComparison.OrdinalIgnoreCase) >= 0);
             }
 
+            if (isUnhandled) _hadUnhandledException = true;
+
             if (!shouldStop)
             {
                 ContinueProcess();
                 return;
             }
-
-            if (isUnhandled) _hadUnhandledException = true;
             var description = GetExceptionDescription(e.Thread);
             OnStopped?.Invoke(e.Thread, StopReason.Exception, description);
         };

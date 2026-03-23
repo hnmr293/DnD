@@ -83,8 +83,20 @@ export class ClientManager {
   }
 
   async ensureClient(): Promise<DebuggerClient> {
-    if (this.client?.isConnected) {
+    if (this.client?.isConnected && this._state !== "exited") {
       return this.client;
+    }
+
+    // Dispose old client (may still be connected if debuggee exited but Host is alive)
+    if (this.client) {
+      await this.client.dispose();
+      this.client = null;
+    }
+
+    // Close output stream from previous session
+    if (this.outputStream) {
+      this.outputStream.end();
+      this.outputStream = null;
     }
 
     // Clean up previous output file from last session
