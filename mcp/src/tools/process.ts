@@ -33,6 +33,9 @@ export function registerProcessTools(
       clientManager.markRunning();
       const event = await waitPromise;
 
+      const hostPidLine = clientManager.hostPid
+        ? `\nDebugger host PID: ${clientManager.hostPid}`
+        : "";
       const outputLine = clientManager.outputFile
         ? `\nOutput file: ${clientManager.outputFile}`
         : "";
@@ -46,14 +49,14 @@ export function registerProcessTools(
           content: [
             {
               type: "text" as const,
-              text: formatStoppedResponse(event.params, topFrame) + outputLine,
+              text: formatStoppedResponse(event.params, topFrame) + hostPidLine + outputLine,
             },
           ],
         };
       }
 
       // Process ran to completion without stopping
-      const exitText = formatExitedResponse(event.params) + outputLine;
+      const exitText = formatExitedResponse(event.params) + hostPidLine + outputLine;
       await clientManager.dispose();
       return {
         content: [{ type: "text" as const, text: exitText }],
@@ -70,6 +73,9 @@ export function registerProcessTools(
     async (params) => {
       const client = await clientManager.ensureClient();
       const result = await client.attach(params);
+      const hostPidLine = clientManager.hostPid
+        ? `\nDebugger host PID: ${clientManager.hostPid}`
+        : "";
       const outputLine = clientManager.outputFile
         ? `\nOutput file: ${clientManager.outputFile}`
         : "";
@@ -77,7 +83,7 @@ export function registerProcessTools(
         content: [
           {
             type: "text" as const,
-            text: `Attached to process ${result.processId}${outputLine}`,
+            text: `Attached to process ${result.processId}${hostPidLine}${outputLine}`,
           },
         ],
       };
@@ -89,10 +95,12 @@ export function registerProcessTools(
     "Detach the debugger from the process without killing it.",
     async () => {
       const client = clientManager.getClient();
+      const hostPid = clientManager.hostPid;
       await client.detach();
       await clientManager.dispose();
+      const pidInfo = hostPid ? ` (host PID was ${hostPid})` : "";
       return {
-        content: [{ type: "text" as const, text: "Detached from process" }],
+        content: [{ type: "text" as const, text: `Detached from process${pidInfo}` }],
       };
     },
   );

@@ -212,6 +212,10 @@ export class DebuggerClient extends EventEmitter<DebuggerClientEvents> {
     }
   }
 
+  get hostPid(): number | null {
+    return this.process?.pid ?? null;
+  }
+
   get isConnected(): boolean {
     return this.connection !== null && this.process !== null;
   }

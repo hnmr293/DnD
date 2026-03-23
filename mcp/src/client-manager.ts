@@ -66,6 +66,10 @@ export class ClientManager {
     return this.outputFilePath;
   }
 
+  get hostPid(): number | null {
+    return this.client?.hostPid ?? null;
+  }
+
   getStateSnapshot(): StateSnapshot {
     const snap: StateSnapshot = { state: this._state };
     if (this._state === "stopped" && this._lastStopped) {
