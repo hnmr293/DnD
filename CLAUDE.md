@@ -56,7 +56,7 @@ When `npm link` is active, `npm run build:all` deploys changes to the MCP server
 
 ## E2E Testing
 
-See `docs/mcp-integration-test-plan.md` for the MCP integration test plan. Covers 18 scenarios (launch, breakpoints, stepping, variables, evaluation, exceptions, conditional BPs, hit counts, etc.) executed manually via MCP tools.
+See `docs/mcp-integration-test-plan.md` for the MCP integration test plan. Covers 19 scenarios (launch, breakpoints, stepping, variables, evaluation, exceptions, conditional BPs, hit counts, waitForStop, etc.) executed manually via MCP tools.
 
 ## StreamJsonRpc Notes
 

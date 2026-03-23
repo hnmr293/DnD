@@ -60,6 +60,7 @@ Add to your `.mcp.json`:
 | `stepIn` | Step into the next method call |
 | `stepOver` | Step over the current line |
 | `stepOut` | Step out of the current method |
+| `waitForStop` | Wait until the process stops or exits (with timeout) |
 
 ### Breakpoints
 
