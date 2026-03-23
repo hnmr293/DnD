@@ -781,7 +781,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
                 _exitedEventFired = true;
             }
 
-            // Release module resources to unlock DLL files
+            // Release module resources to unlock DLL/PDB files
             foreach (var (_, (_, reader)) in _modules)
                 reader?.Dispose();
             _modules.Clear();
@@ -789,6 +789,15 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
             try { _corDebug?.Terminate(); }
             catch { }
             _corDebug = null;
+
+            // Release COM object references so the GC can finalize RCWs
+            // and release any remaining file handles held by ICorDebug.
+            // Without this, DLL files stay locked until the process exits.
+            _callbackHandler = null!;
+            _process = null;
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
 
             Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(exitCode)));
         };
