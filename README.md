@@ -20,7 +20,12 @@ LLM → MCP (stdio) → TypeScript MCP Server → JSON-RPC (stdio) → C# Debugg
 ### Install
 
 ```bash
-npm install -g dnd-mcp
+# Not yet published to npm registry
+# npm install -g dnd-mcp
+git clone https://github.com/hnmr293/DnD.git
+cd DnD
+npm run build:all
+npm link
 ```
 
 ### Configure MCP
