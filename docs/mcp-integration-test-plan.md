@@ -319,7 +319,7 @@ Verify that Claude autonomously performs:
 **Purpose**: Verify conditional BP behavior with the condition parameter
 
 **Steps** (using EvalTest fixture):
-1. `setBreakpoint` at Program.cs:6 with condition `number > 40`
+1. `setBreakpoint` at Program.cs:14 with condition `number > 40`
    - Expected: `[condition: number > 40]` display
 2. `launch` -> stops at Debugger.Break()
 3. `continue` to run
@@ -334,7 +334,7 @@ Verify that Claude autonomously performs:
 **Purpose**: Verify hit count BP behavior with the hitCount parameter
 
 **Steps** (using EvalTest fixture):
-1. `setBreakpoint` at Program.cs:6 with hitCount=1
+1. `setBreakpoint` at Program.cs:14 with hitCount=1
    - Expected: `[hitCount: 1]` display
 2. `launch` -> `continue` -> stops on first hit
 3. `terminate` to exit
