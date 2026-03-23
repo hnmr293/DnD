@@ -27,19 +27,32 @@ Two main components:
 
 ## Build & Test Commands
 
-C# debugger (.NET 8+):
-```
+All commands must be run from the repository root.
+
+### C# debugger (.NET 8+)
+```bash
 dotnet build debugger/DnD.slnx
-dotnet test debugger/tests/DnD.Core.Tests
-dotnet test debugger/tests/DnD.Host.Tests
+dotnet test debugger/tests/DnD.Core.Tests           # Unit tests (fast, ~1s)
+dotnet test debugger/tests/DnD.Host.Tests           # E2E tests (slow, ~3min, spawns real debugger processes)
 ```
 
-TypeScript MCP server:
-```
+### TypeScript MCP server
+```bash
 cd mcp && npm install
-cd mcp && npm run build
-cd mcp && npm test
+cd mcp && npm run build      # tsc only
+cd mcp && npm test           # vitest (stub mode, fast)
 ```
+
+### Full build (C# Host publish + TypeScript)
+```bash
+cd mcp && npm run build:all  # dotnet publish DnD.Host → mcp/bin/ then tsc
+```
+When `npm link` is active, `npm run build:all` deploys changes to the MCP server.
+
+### Notes
+- Run `npm` commands inside `mcp/` — there is no `package.json` at the repo root
+- `dotnet build/test` can be run from the repo root using relative paths
+- **Important**: `cd mcp && npm ...` changes the working directory. Subsequent `dotnet` commands must use absolute paths (e.g., `dotnet test /path/to/project/debugger/tests/DnD.Host.Tests`) or explicitly `cd` back to the repo root.
 
 ## E2E Testing
 
@@ -57,7 +70,3 @@ See `docs/mcp-integration-test-plan.md` for the MCP integration test plan. Cover
 - **JSON-RPC 2.0 over stdio** between TypeScript and C# — matches MCP's own stdio transport, avoids port management
 - **camelCase method names** in JSON-RPC, following DAP conventions (e.g., `launch`, `setBreakpoint`, `stepIn`, `getStackTrace`, `evaluate`)
 - Events flow from C# → TypeScript as JSON-RPC notifications: `stopped`, `exited`, `output`
-
-## Current Status
-
-Phase 1 complete (protocol + scaffolding + stub JSON-RPC server with passing tests). Phase 2 (ICorDebug debugger core) is next. See `docs/design.md` for full protocol specification and `docs/handover.md` for decision rationale.
