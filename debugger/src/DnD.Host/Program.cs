@@ -7,6 +7,13 @@ using StreamJsonRpc;
 
 Console.Error.WriteLine("DnD.Host starting...");
 
+// Log unhandled exceptions to a file before crashing
+AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+{
+    var crashLog = Path.Combine(Path.GetTempPath(), "dnd-host-crash.log");
+    File.WriteAllText(crashLog, $"{DateTime.Now:O}\n{e.ExceptionObject}");
+};
+
 // Orphan process prevention: monitor parent process and exit when it dies
 var parentPidIndex = Array.IndexOf(args, "--parentPid");
 if (parentPidIndex >= 0 && parentPidIndex + 1 < args.Length &&
