@@ -6,6 +6,7 @@ import type {
   StoppedParams,
   ExitedParams,
   StackFrame,
+  StopReason,
 } from "../types/protocol.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -168,6 +169,94 @@ export function registerExecutionTools(
       clientManager.markRunning();
       return {
         content: [{ type: "text" as const, text: "Process running" }],
+      };
+    },
+  );
+
+  server.tool(
+    "waitForStop",
+    "Wait until the process stops (breakpoint, exception, pause) or exits. Use after 'continue' when you need to wait for the next stop. Returns immediately if the process is already stopped or exited.",
+    {
+      timeout: z.coerce
+        .number()
+        .optional()
+        .describe(
+          "Timeout in milliseconds (default: 30000). Returns a timeout error if no stop occurs within this period.",
+        ),
+    },
+    async (params) => {
+      const snap = clientManager.getStateSnapshot();
+      if (snap.state === "stopped") {
+        const client = clientManager.getClient();
+        const topFrame = snap.threadId
+          ? await fetchTopFrame(client, snap.threadId)
+          : null;
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: formatStoppedResponse(
+                {
+                  reason: (snap.stopReason as StopReason) ?? "pause",
+                  threadId: snap.threadId ?? 0,
+                  description: snap.stopDescription,
+                  breakpointId: snap.breakpointId,
+                },
+                topFrame,
+              ),
+            },
+          ],
+        };
+      }
+      if (snap.state === "exited") {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: formatExitedResponse({
+                exitCode: snap.exitCode ?? 0,
+              }),
+            },
+          ],
+        };
+      }
+      if (snap.state === "not-started") {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "No process running. Call launch or attach first.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // state === "running" — wait for stop or exit
+      const client = clientManager.getClient();
+      const timeoutMs = params.timeout ?? DEFAULT_TIMEOUT_MS;
+      const event = await waitForStopOrExit(client, timeoutMs);
+
+      if (event.type === "stopped") {
+        const topFrame = await fetchTopFrame(client, event.params.threadId);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: formatStoppedResponse(event.params, topFrame),
+            },
+          ],
+        };
+      }
+
+      await clientManager.dispose();
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: formatExitedResponse(event.params),
+          },
+        ],
       };
     },
   );

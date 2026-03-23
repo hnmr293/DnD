@@ -35,6 +35,7 @@ export interface StateSnapshot {
   stopReason?: string;
   stopDescription?: string;
   threadId?: number;
+  breakpointId?: number;
   exitCode?: number;
   outputFile?: string;
 }
@@ -76,6 +77,7 @@ export class ClientManager {
       snap.stopReason = this._lastStopped.reason;
       snap.stopDescription = this._lastStopped.description;
       snap.threadId = this._lastStopped.threadId;
+      snap.breakpointId = this._lastStopped.breakpointId;
     }
     if (this._state === "exited" && this._lastExitCode != null) {
       snap.exitCode = this._lastExitCode;

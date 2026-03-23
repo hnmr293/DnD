@@ -47,7 +47,7 @@ Restart Claude Code and verify the MCP server is recognized:
 /mcp
 ```
 
-Confirm that `dnd-debugger` appears with 19 tools listed.
+Confirm that `dnd-debugger` appears with 20 tools listed.
 
 ---
 
@@ -227,7 +227,41 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
 - Exit state includes exit code
 - Output file path is displayed
 
-### 2.11 Output File
+### 2.11 waitForStop (Blocking Wait for Stop/Exit)
+
+**Purpose**: Verify waitForStop tool behavior across all states
+
+**Steps**:
+1. Call `waitForStop` before launch
+   - Expected: Error — `No process running. Call launch or attach first.`
+2. Launch VariablesTest -> stops at Debugger.Break()
+3. Call `waitForStop` (already stopped)
+   - Expected: `Stopped: pause — Debugger.Break()` + stack position (immediate return, no wait)
+4. `continue` to resume
+5. Call `waitForStop` with timeout=5000
+   - Expected: `Process exited with code 0` (process already exited, immediate return)
+6. Call `getState`
+   - Expected: `State: exited (exit code 0)`
+
+**Additional Scenario — Timeout**:
+1. Launch BreakpointTest with BP at Program.cs:7
+2. `continue` -> stops at breakpoint
+3. Call `waitForStop` (already stopped)
+   - Expected: Immediate return with `Stopped: breakpoint #1`
+4. `continue` -> process exits
+5. New session: Launch BreakpointTest with BP at Program.cs:7
+6. `continue` -> stops at breakpoint
+7. Do NOT continue. Call `waitForStop` again.
+   - Expected: Immediate return (already stopped)
+
+**Verification Points**:
+- Returns error when no process is running (not-started state)
+- Returns immediately when already stopped (does not block)
+- Returns immediately when already exited (does not block)
+- Returns correct stop reason and stack position when stopped
+- Returns correct exit code when exited
+
+### 2.12 Output File
 
 **Purpose**: Verify program output is written to file
 
@@ -243,7 +277,7 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
 - File contains stdout content
 - File is readable during debugging (while stopped) (FILE_SHARE_READ)
 
-### 2.12 Display Format Verification
+### 2.13 Display Format Verification
 
 **Purpose**: Batch verification of text display improvements
 
@@ -259,7 +293,7 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
 | 6 | Evaluate ref display | Scenario 2.5 (obj, list) | `(ref: N)` — N > 0 |
 | 7 | breakpointId display | Scenario 2.2 step 3 | `breakpoint #1` |
 
-### 2.13 Full Debug Session (E2E)
+### 2.14 Full Debug Session (E2E)
 
 **Purpose**: Execute a complete debugging workflow end-to-end
 
@@ -277,7 +311,7 @@ Verify that Claude autonomously performs:
 6. Evaluate expressions with evaluate
 7. Terminate process with terminate
 
-### 2.14 $exception Pseudo-Variable
+### 2.15 $exception Pseudo-Variable
 
 **Purpose**: Access exceptions via the `$exception` pseudo-variable when stopped on exception
 
@@ -298,7 +332,7 @@ Verify that Claude autonomously performs:
 - `$exception.Message` can access base class (System.Exception) properties
 - `$exception.StackTrace` works via func-eval property access
 
-### 2.15 Exception Debug Session (E2E)
+### 2.16 Exception Debug Session (E2E)
 
 **Purpose**: Exception debugging workflow
 
@@ -314,7 +348,7 @@ Verify that Claude autonomously performs:
 5. Inspect state with getVariables / evaluate
 6. Terminate process with terminate
 
-### 2.16 Conditional Breakpoints
+### 2.17 Conditional Breakpoints
 
 **Purpose**: Verify conditional BP behavior with the condition parameter
 
@@ -329,7 +363,7 @@ Verify that Claude autonomously performs:
 6. `launch` -> `continue`
    - Expected: Condition is false -> auto-continue -> process exits normally
 
-### 2.17 Hit Count Breakpoints
+### 2.18 Hit Count Breakpoints
 
 **Purpose**: Verify hit count BP behavior with the hitCount parameter
 
@@ -342,7 +376,7 @@ Verify that Claude autonomously performs:
 5. `launch` -> `continue`
    - Expected: Only hit once so auto-continue -> process exits normally
 
-### 2.18 Exception Breakpoints
+### 2.19 Exception Breakpoints
 
 **Purpose**: Verify exception filtering with setExceptionBreakpoints
 
@@ -363,7 +397,7 @@ Verify that Claude autonomously performs:
 | # | Category | Verification Item |
 |---|----------|------------------|
 | 1 | Connection | `dnd-debugger` appears in `/mcp` |
-| 2 | Connection | 19 tools are recognized |
+| 2 | Connection | 20 tools are recognized |
 | 3 | Launch | launch returns output file path |
 | 4 | Terminate | terminate completes successfully |
 | 5 | BP | setBreakpoint -> `(pending — will activate when code is loaded)` |
@@ -392,22 +426,25 @@ Verify that Claude autonomously performs:
 | 28 | State | Before launch: `State: not-started` |
 | 29 | State | While stopped: `State: stopped` + reason + threadId |
 | 30 | State | After exit: `State: exited` + exit code |
-| 31 | Output | Output file contains stdout content |
-| 32 | Output | Output file is readable via Read while stopped |
-| 33 | Error | Operations before launch -> error |
-| 34 | Error | Nonexistent variable -> error |
-| 35 | $exception | $exception appears in getVariables |
-| 36 | $exception | evaluate("$exception.Message") retrieves message |
-| 37 | $exception | evaluate("$exception.StackTrace") retrieves stack trace |
-| 38 | Conditional BP | condition true -> stops |
-| 39 | Conditional BP | condition false -> auto-continue -> normal exit |
-| 40 | Hit Count | hitCount=1, 1 hit -> stops |
-| 41 | Hit Count | hitCount=2, only 1 hit -> auto-continue |
-| 42 | Exception BP | thrown+uncaught, no filter -> stops |
-| 43 | Exception BP | types=["ArgumentException"], InvalidOp -> skipped |
-| 44 | Exception BP | types=["InvalidOperation"], InvalidOp -> stops |
-| 45 | E2E | Claude autonomously completes a debug session |
-| 46 | E2E | Claude autonomously completes an exception debug session |
+| 31 | waitForStop | Before launch -> error |
+| 32 | waitForStop | While stopped -> immediate return with stop info |
+| 33 | waitForStop | After exit -> immediate return with exit code |
+| 34 | Output | Output file contains stdout content |
+| 35 | Output | Output file is readable via Read while stopped |
+| 36 | Error | Operations before launch -> error |
+| 37 | Error | Nonexistent variable -> error |
+| 38 | $exception | $exception appears in getVariables |
+| 39 | $exception | evaluate("$exception.Message") retrieves message |
+| 40 | $exception | evaluate("$exception.StackTrace") retrieves stack trace |
+| 41 | Conditional BP | condition true -> stops |
+| 42 | Conditional BP | condition false -> auto-continue -> normal exit |
+| 43 | Hit Count | hitCount=1, 1 hit -> stops |
+| 44 | Hit Count | hitCount=2, only 1 hit -> auto-continue |
+| 45 | Exception BP | thrown+uncaught, no filter -> stops |
+| 46 | Exception BP | types=["ArgumentException"], InvalidOp -> skipped |
+| 47 | Exception BP | types=["InvalidOperation"], InvalidOp -> stops |
+| 48 | E2E | Claude autonomously completes a debug session |
+| 49 | E2E | Claude autonomously completes an exception debug session |
 
 ---
 
