@@ -57,6 +57,9 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     {
         EnsureState(DebuggerState.NotStarted);
 
+        if (!File.Exists(request.Program))
+            throw new FileNotFoundException($"Program not found: {request.Program}");
+
         _stopAtEntry = request.StopAtEntry;
         _programPath = Path.GetFullPath(request.Program);
 
