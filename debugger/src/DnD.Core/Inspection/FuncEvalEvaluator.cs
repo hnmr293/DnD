@@ -7,12 +7,22 @@ using StreamJsonRpc;
 using static ExpressionParser;
 
 /// <summary>
+/// Interface for executing func-evals on the debuggee.
+/// Decouples FuncEvalEvaluator from DebuggerEngine.
+/// </summary>
+public interface IEvalExecutor
+{
+    Task<CorDebugValue> ExecuteEvalAsync(
+        Action<CorDebugEval> setupAction, CorDebugThread thread, TimeSpan? timeout = null);
+}
+
+/// <summary>
 /// Evaluates parsed expression ASTs using ICorDebugEval for property access,
 /// method calls, and arithmetic that cannot be resolved by simple field lookup.
 /// </summary>
 public class FuncEvalEvaluator
 {
-    private readonly DebuggerEngine _engine;
+    private readonly IEvalExecutor _evalExecutor;
     private readonly CorDebugThread _thread;
     private readonly CorDebugILFrame _frame;
     private readonly ISymbolReader? _reader;
@@ -22,7 +32,7 @@ public class FuncEvalEvaluator
     private readonly ValueReader _valueReader = new();
 
     public FuncEvalEvaluator(
-        DebuggerEngine engine,
+        IEvalExecutor evalExecutor,
         CorDebugThread thread,
         CorDebugILFrame frame,
         ISymbolReader? reader,
@@ -30,7 +40,7 @@ public class FuncEvalEvaluator
         CorDebugValue? exceptionValue = null,
         CorDebugValue? returnValue = null)
     {
-        _engine = engine;
+        _evalExecutor = evalExecutor;
         _thread = thread;
         _frame = frame;
         _reader = reader;
@@ -174,7 +184,7 @@ public class FuncEvalEvaluator
         if (lit.Kind == LiteralKind.String)
         {
             // NewString requires eval execution (code runs in debuggee)
-            return await _engine.ExecuteEvalAsync(eval =>
+            return await _evalExecutor.ExecuteEvalAsync(eval =>
             {
                 eval.NewString((string)lit.Value!);
             }, _thread);
@@ -231,7 +241,7 @@ public class FuncEvalEvaluator
             var getter = MetadataHelper.FindPropertyGetter(objVal, memberName);
             if (getter != null)
             {
-                return await _engine.ExecuteEvalAsync(eval =>
+                return await _evalExecutor.ExecuteEvalAsync(eval =>
                 {
                     CallFunction(eval, getter, [raw]);
                 }, _thread);
@@ -255,7 +265,7 @@ public class FuncEvalEvaluator
                 var allArgs = new CorDebugValue[args.Length + 1];
                 allArgs[0] = raw;
                 Array.Copy(args, 0, allArgs, 1, args.Length);
-                return await _engine.ExecuteEvalAsync(eval =>
+                return await _evalExecutor.ExecuteEvalAsync(eval =>
                 {
                     CallFunction(eval, method, allArgs);
                 }, _thread);
@@ -283,7 +293,7 @@ public class FuncEvalEvaluator
             var getItem = MetadataHelper.FindMethodByName(objVal, "get_Item", 1);
             if (getItem != null)
             {
-                return await _engine.ExecuteEvalAsync(eval =>
+                return await _evalExecutor.ExecuteEvalAsync(eval =>
                 {
                     CallFunction(eval, getItem, [raw, index]);
                 }, _thread);
@@ -376,7 +386,7 @@ public class FuncEvalEvaluator
             if (leftStr != null || rightStr != null)
             {
                 var concatResult = (leftStr ?? "null") + (rightStr ?? "null");
-                return await _engine.ExecuteEvalAsync(eval =>
+                return await _evalExecutor.ExecuteEvalAsync(eval =>
                 {
                     eval.NewString(concatResult);
                 }, _thread);

@@ -9,19 +9,14 @@ public class BreakpointManager
     private int _nextId = 1;
     private readonly Dictionary<int, BreakpointEntry> _breakpoints = new();
     private readonly List<PendingBreakpoint> _pending = new();
-    private readonly Dictionary<string, (CorDebugModule Module, ISymbolReader? Reader)> _modules;
-
-    public BreakpointManager(Dictionary<string, (CorDebugModule Module, ISymbolReader? Reader)> modules)
-    {
-        _modules = modules;
-    }
 
     public SetBreakpointResponse SetBreakpoint(string file, int line,
+        Dictionary<string, (CorDebugModule Module, ISymbolReader? Reader)> modules,
         string? condition = null, int? hitCount = null)
     {
         var normalizedFile = file.Replace('/', '\\');
 
-        foreach (var (moduleName, (module, reader)) in _modules)
+        foreach (var (moduleName, (module, reader)) in modules)
         {
             if (reader == null) continue;
 
@@ -50,6 +45,21 @@ public class BreakpointManager
             try { entry.CorBreakpoint.Activate(false); }
             catch { }
         }
+    }
+
+    /// <summary>
+    /// Convert all active breakpoints back to pending and clear active entries.
+    /// Used after detach to preserve breakpoint definitions across sessions
+    /// while discarding stale COM references.
+    /// </summary>
+    public void RevertAllToPending()
+    {
+        foreach (var (id, entry) in _breakpoints)
+        {
+            _pending.Add(new PendingBreakpoint(id, entry.File, entry.Line,
+                entry.Condition, entry.HitCount));
+        }
+        _breakpoints.Clear();
     }
 
     public void RemoveBreakpoint(int breakpointId)

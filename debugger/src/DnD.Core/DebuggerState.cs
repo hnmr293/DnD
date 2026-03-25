@@ -5,5 +5,6 @@ public enum DebuggerState
     NotStarted,
     Running,
     Stopped,
+    Evaluating,
     Terminated
 }

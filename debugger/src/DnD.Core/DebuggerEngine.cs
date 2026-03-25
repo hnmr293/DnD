@@ -1,47 +1,28 @@
 namespace DnD.Core;
 
+using System.Diagnostics;
 using System.Reflection.PortableExecutable;
 using ClrDebug;
 using DnD.Core.Callbacks;
+using DnD.Core.Inspection;
 using DnD.Core.Runtime;
 using DnD.Protocol;
 using StreamJsonRpc;
 
-public class DebuggerEngine : IDebuggerEngine, IDisposable
+public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, IDisposable
 {
-    private DebuggerState _state = DebuggerState.NotStarted;
-    private CorDebug? _corDebug;
-    private CorDebugProcess? _process;
-    private ManagedCallbackHandler? _callbackHandler;
+    private IDebuggerState _currentState = NotStartedState.Instance;
+    private DebugSession? _session;
     private readonly IProcessLauncher _launcher;
-
-    private CorDebugThread? _stoppedThread;
     private readonly object _lock = new();
-    private bool _stopAtEntry;
-    private string? _programPath;
-    private bool _exitedEventFired;
+
+    // Session-crossing state
+    private readonly BreakpointManager _breakpointManager = new();
 
     // Exception breakpoint settings (stored here so they survive pre-launch configuration)
     private bool _exceptionStopOnThrown;
     private bool _exceptionStopOnUncaught = true;
     private string[]? _exceptionTypeFilter;
-
-    private readonly Dictionary<int, CorDebugILFrame> _frameMap = new();
-    private int _nextFrameId;
-
-    private readonly Dictionary<string, (CorDebugModule Module, Symbols.ISymbolReader? Reader)> _modules = new();
-    private readonly BreakpointManager _breakpointManager;
-    private readonly Inspection.VariableStore _variableStore = new();
-    private TaskCompletionSource<(CorDebugEval Eval, bool Success)>? _evalTcs;
-
-    // $returnValue pseudo-variable: captured after StepOut completes
-    private CorDebugValue? _lastReturnValue;
-    private bool _pendingStepOut;
-    private int _returnValueCallILOffset;
-    private List<CorDebugFunctionBreakpoint>? _returnValueBreakpoints;
-    // When both StepComplete and Breakpoint callbacks fire at the same location,
-    // suppress the second one to avoid a duplicate stop.
-    private bool _suppressNextStepCallback;
 
     public event EventHandler<StoppedEventArgs>? Stopped;
     public event EventHandler<ExitedEventArgs>? Exited;
@@ -50,269 +31,270 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     public DebuggerEngine(IProcessLauncher launcher)
     {
         _launcher = launcher;
-        _breakpointManager = new BreakpointManager(_modules);
     }
 
-    public Task<LaunchResponse> LaunchAsync(LaunchRequest request)
+    // ── ISessionContext implementation ─────────────────────────────────
+
+    BreakpointManager ISessionContext.BreakpointManager => _breakpointManager;
+
+    DebugSession ISessionContext.CreateLaunchSession(LaunchRequest request)
     {
-        EnsureState(DebuggerState.NotStarted);
-
-        if (!File.Exists(request.Program))
-            throw new FileNotFoundException($"Program not found: {request.Program}");
-
-        _stopAtEntry = request.StopAtEntry;
-        _programPath = Path.GetFullPath(request.Program);
-
-        _callbackHandler = new ManagedCallbackHandler();
-        ApplyExceptionBreakpointSettings();
-        WireCallbackEvents();
+        var handler = new ManagedCallbackHandler();
+        ApplyExceptionBreakpointSettings(handler);
+        WireCallbackEvents(handler);
 
         var result = _launcher.Launch(
             request.Program, request.Args, request.Cwd, request.Env,
-            _callbackHandler.Callback);
+            handler.Callback);
 
-        _corDebug = result.CorDebug;
-        _process = result.Process;
-        _state = DebuggerState.Running;
+        var session = new DebugSession(result.CorDebug, result.Process, handler)
+        {
+            StopAtEntry = request.StopAtEntry,
+            ProgramPath = Path.GetFullPath(request.Program)
+        };
+        _session = session;
 
-        // Start reading debuggee's stdout/stderr on background threads
         if (result.StandardOutput != null)
             StartOutputReader(result.StandardOutput, OutputCategory.Stdout);
         if (result.StandardError != null)
             StartOutputReader(result.StandardError, OutputCategory.Stderr);
 
-        return Task.FromResult(new LaunchResponse(ProcessId: _process.Id));
+        return session;
+    }
+
+    DebugSession ISessionContext.CreateAttachSession(AttachRequest request)
+    {
+        var handler = new ManagedCallbackHandler();
+        ApplyExceptionBreakpointSettings(handler);
+        WireCallbackEvents(handler);
+
+        var result = _launcher.Attach(request.ProcessId, handler.Callback);
+
+        var session = new DebugSession(result.CorDebug, result.Process, handler);
+        _session = session;
+        return session;
+    }
+
+    DebugSession ISessionContext.GetSession()
+        => _session ?? throw new InvalidOperationException("No active debug session");
+
+    void ISessionContext.EndSession()
+    {
+        var session = _session;
+        _session = null;
+        if (session != null)
+        {
+            _breakpointManager.RevertAllToPending();
+            session.Dispose();
+        }
+    }
+
+    async Task ISessionContext.TerminateProcessAsync()
+    {
+        var session = _session;
+        if (session != null && session.IsProcessAlive())
+        {
+            try
+            {
+                var process = session.Process;
+                await Task.Run(() =>
+                {
+                    process.Stop(3000);
+                    process.Terminate(0);
+                }).WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            catch { }
+        }
+    }
+
+    void ISessionContext.RaiseStoppedEvent(StoppedNotification notification)
+    {
+        Stopped?.Invoke(this, new StoppedEventArgs(notification));
+    }
+
+    bool ISessionContext.RaiseExitedEvent(int exitCode)
+    {
+        lock (_lock)
+        {
+            var session = _session;
+            // Use session's flag if session exists, otherwise use a local guard
+            if (session != null)
+            {
+                if (session.ExitedEventFired) return false;
+                session.ExitedEventFired = true;
+            }
+        }
+        Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(ExitCode: exitCode)));
+        return true;
+    }
+
+    // ── DbC: Design by Contract assertions ────────────────────────────
+
+    [Conditional("DEBUG")]
+    private void AssertStateSessionConsistency()
+    {
+        var id = _currentState.Id;
+        switch (id)
+        {
+            case DebuggerState.NotStarted:
+            case DebuggerState.Terminated:
+                Debug.Assert(_session == null,
+                    $"State is {id} but session exists");
+                break;
+            case DebuggerState.Running:
+            case DebuggerState.Stopped:
+            case DebuggerState.Evaluating:
+                Debug.Assert(_session != null,
+                    $"State is {id} but session is null");
+                break;
+        }
+    }
+
+    [Conditional("DEBUG")]
+    private void AssertPrecondition(DebuggerState expected)
+    {
+        Debug.Assert(_currentState.Id == expected,
+            $"Precondition failed: expected {expected}, got {_currentState.Id}");
+        AssertStateSessionConsistency();
+    }
+
+    [Conditional("DEBUG")]
+    private void AssertPostcondition(DebuggerState expected)
+    {
+        Debug.Assert(_currentState.Id == expected,
+            $"Postcondition failed: expected {expected}, got {_currentState.Id}");
+        AssertStateSessionConsistency();
+    }
+
+    // ── Process control ────────────────────────────────────────────────
+
+    public Task<LaunchResponse> LaunchAsync(LaunchRequest request)
+    {
+        AssertPrecondition(DebuggerState.NotStarted);
+        _currentState = _currentState.Launch(this, request);
+        AssertPostcondition(DebuggerState.Running);
+        var session = _session ?? throw new InvalidOperationException("Session not created");
+        return Task.FromResult(new LaunchResponse(ProcessId: session.Process.Id));
     }
 
     public Task<AttachResponse> AttachAsync(AttachRequest request)
     {
-        EnsureState(DebuggerState.NotStarted);
-
-        _callbackHandler = new ManagedCallbackHandler();
-        ApplyExceptionBreakpointSettings();
-        WireCallbackEvents();
-
-        var result = _launcher.Attach(request.ProcessId, _callbackHandler.Callback);
-
-        _corDebug = result.CorDebug;
-        _process = result.Process;
-        _state = DebuggerState.Running;
-
-        return Task.FromResult(new AttachResponse(ProcessId: _process.Id));
+        AssertPrecondition(DebuggerState.NotStarted);
+        _currentState = _currentState.Attach(this, request);
+        AssertPostcondition(DebuggerState.Running);
+        var session = _session ?? throw new InvalidOperationException("Session not created");
+        return Task.FromResult(new AttachResponse(ProcessId: session.Process.Id));
     }
 
     public Task DetachAsync()
     {
-        if (_state == DebuggerState.Terminated || _state == DebuggerState.NotStarted)
-            return Task.CompletedTask;
-
-        // Deactivate all breakpoints before detaching
-        _breakpointManager.DeactivateAll();
-
-        // If stopped at a callback boundary, resume first.
-        // Continue(false) alone is not enough — queued callbacks may immediately
-        // re-stop the process at a new callback boundary (CORDBG_E_PROCESS_NOT_SYNCHRONIZED).
-        if (_state == DebuggerState.Stopped)
-        {
-            try { _process?.Continue(false); }
-            catch { }
-        }
-
-        // Stop() drains queued callbacks (auto-continued by the handler) and puts
-        // the process in a controlled stop state where Detach() can succeed.
-        try { _process?.Stop(5000); }
-        catch { }
-
-        try { _process?.Detach(); }
-        catch { }
-
-        _state = DebuggerState.Terminated;
+        AssertStateSessionConsistency();
+        _currentState = _currentState.Detach(this);
+        AssertStateSessionConsistency();
         return Task.CompletedTask;
     }
 
     public async Task TerminateAsync()
     {
-        if (_state == DebuggerState.Terminated)
-        {
-            // Ensure exited event is fired even if already terminated (e.g., callback already ran)
-            lock (_lock)
-            {
-                if (_exitedEventFired) return;
-                _exitedEventFired = true;
-            }
-            Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(ExitCode: 0)));
-            return;
-        }
-
-        if (_state == DebuggerState.NotStarted)
-        {
-            _state = DebuggerState.Terminated;
-            lock (_lock) { _exitedEventFired = true; }
-            Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(ExitCode: 0)));
-            return;
-        }
-
-        // Safety net: if the process has already exited, skip Stop/Terminate
-        // which can block on a dead ICorDebug process object.
-        var processAlive = IsProcessAlive();
-
-        if (processAlive && _process != null)
-        {
-            try
-            {
-                await Task.Run(() =>
-                {
-                    _process.Stop(3000);
-                    _process.Terminate(0);
-                }).WaitAsync(TimeSpan.FromSeconds(5));
-            }
-            catch { }
-        }
-
-        _state = DebuggerState.Terminated;
-        lock (_lock)
-        {
-            if (_exitedEventFired) return;
-            _exitedEventFired = true;
-        }
-        Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(ExitCode: 0)));
+        AssertStateSessionConsistency();
+        _currentState = await _currentState.TerminateAsync(this);
+        AssertStateSessionConsistency();
     }
 
-    private bool IsProcessAlive()
-    {
-        if (_process == null) return false;
-        try
-        {
-            using var osProcess = System.Diagnostics.Process.GetProcessById(_process.Id);
-            return !osProcess.HasExited;
-        }
-        catch { return false; }
-    }
+    // ── Execution control ──────────────────────────────────────────────
 
     public Task PauseAsync()
     {
-        if (_state == DebuggerState.Stopped)
-        {
-            // Already stopped — re-fire event so caller gets a response
-            var tid = 0;
-            try { tid = _stoppedThread?.Id ?? 0; } catch { }
-            Stopped?.Invoke(this, new StoppedEventArgs(
-                new StoppedNotification(StopReason.Pause, tid, "Already stopped")));
-            return Task.CompletedTask;
-        }
-
-        EnsureState(DebuggerState.Running);
-        _process!.Stop(0);
-
-        CorDebugThread? thread = null;
-        try { foreach (var t in _process.EnumerateThreads()) { thread = t; break; } }
-        catch { }
-
-        lock (_lock)
-        {
-            _stoppedThread = thread;
-            _state = DebuggerState.Stopped;
-            _variableStore.Clear();
-            _frameMap.Clear();
-            _nextFrameId = 0;
-        }
-
-        var threadId = 0;
-        try { threadId = thread?.Id ?? 0; } catch { }
-        Stopped?.Invoke(this, new StoppedEventArgs(
-            new StoppedNotification(StopReason.Pause, threadId, "Paused by user")));
+        _currentState = _currentState.Pause(this);
         return Task.CompletedTask;
     }
 
     public Task ContinueAsync(ContinueRequest request)
     {
-        EnsureState(DebuggerState.Stopped);
-        ClearStopState();
-        _state = DebuggerState.Running;
-        _process!.Continue(false);
+        _currentState = _currentState.Resume(this);
         return Task.CompletedTask;
     }
 
     public Task StepInAsync(StepInRequest request)
     {
-        EnsureState(DebuggerState.Stopped);
-        var thread = GetThread(request.ThreadId);
+        _currentState.EnsureStopped();
+        var session = RequireSession();
+        var thread = GetThread(request.ThreadId, session);
         var frame = thread.ActiveFrame as CorDebugILFrame ?? throw new InvalidOperationException("No IL frame available for stepping.");
         var stepper = thread.CreateStepper();
         stepper.SetInterceptMask(CorDebugIntercept.INTERCEPT_NONE);
         stepper.SetUnmappedStopMask(CorDebugUnmappedStop.STOP_NONE);
 
-        var ranges = GetStepRanges(frame);
+        var ranges = GetStepRanges(frame, session);
         if (ranges.Length > 0)
             stepper.StepRange(true, ranges, ranges.Length);
         else
             stepper.Step(true);
 
-        ClearStopState();
-        _state = DebuggerState.Running;
-        _process!.Continue(false);
+        _currentState = _currentState.Resume(this);
         return Task.CompletedTask;
     }
 
     public Task StepOverAsync(StepOverRequest request)
     {
-        EnsureState(DebuggerState.Stopped);
-        var thread = GetThread(request.ThreadId);
+        _currentState.EnsureStopped();
+        var session = RequireSession();
+        var thread = GetThread(request.ThreadId, session);
         var frame = thread.ActiveFrame as CorDebugILFrame ?? throw new InvalidOperationException("No IL frame available for stepping.");
         var stepper = thread.CreateStepper();
         stepper.SetInterceptMask(CorDebugIntercept.INTERCEPT_NONE);
         stepper.SetUnmappedStopMask(CorDebugUnmappedStop.STOP_NONE);
 
-        var ranges = GetStepRanges(frame);
+        var ranges = GetStepRanges(frame, session);
         if (ranges.Length > 0)
             stepper.StepRange(false, ranges, ranges.Length);
         else
             stepper.Step(false);
 
-        ClearStopState();
-        _state = DebuggerState.Running;
-        _process!.Continue(false);
+        _currentState = _currentState.Resume(this);
         return Task.CompletedTask;
     }
 
     public Task StepOutAsync(StepOutRequest request)
     {
-        EnsureState(DebuggerState.Stopped);
-        var thread = GetThread(request.ThreadId);
+        _currentState.EnsureStopped();
+        var session = RequireSession();
+        var thread = GetThread(request.ThreadId, session);
 
         // Before stepping out, set hidden native breakpoints at the caller's
         // return-value live offsets so GetReturnValueForILOffset will work.
-        SetupReturnValueBreakpoints(thread);
+        SetupReturnValueBreakpoints(thread, session);
 
         var stepper = thread.CreateStepper();
         stepper.SetInterceptMask(CorDebugIntercept.INTERCEPT_NONE);
         stepper.SetUnmappedStopMask(CorDebugUnmappedStop.STOP_NONE);
         stepper.StepOut();
 
-        _pendingStepOut = true;
-        ClearStopState();
-        _state = DebuggerState.Running;
-        _process!.Continue(false);
+        session.PendingStepOut = true;
+        _currentState = _currentState.Resume(this);
         return Task.CompletedTask;
     }
 
+    // ── Breakpoints ────────────────────────────────────────────────────
+
     public Task<SetBreakpointResponse> SetBreakpointAsync(SetBreakpointRequest request)
     {
-        EnsureNotTerminatedForBreakpoints();
+        _currentState.EnsureNotTerminatedForBreakpoints();
+        var modules = _session?.Modules ?? new Dictionary<string, (CorDebugModule, Symbols.ISymbolReader?)>();
         return Task.FromResult(_breakpointManager.SetBreakpoint(
-            request.File, request.Line, request.Condition, request.HitCount));
+            request.File, request.Line, modules, request.Condition, request.HitCount));
     }
 
     public Task RemoveBreakpointAsync(RemoveBreakpointRequest request)
     {
-        EnsureNotTerminatedForBreakpoints();
+        _currentState.EnsureNotTerminatedForBreakpoints();
         _breakpointManager.RemoveBreakpoint(request.BreakpointId);
         return Task.CompletedTask;
     }
 
     public Task<GetBreakpointsResponse> GetBreakpointsAsync()
     {
-        EnsureNotTerminatedForBreakpoints();
+        _currentState.EnsureNotTerminatedForBreakpoints();
         return Task.FromResult(_breakpointManager.GetBreakpoints());
     }
 
@@ -324,25 +306,28 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         _exceptionStopOnUncaught = request.Uncaught;
         _exceptionTypeFilter = request.Types;
 
-        // Apply immediately if handler already exists
-        if (_callbackHandler != null)
+        // Apply immediately if session already exists
+        if (_session != null)
         {
-            _callbackHandler.ExceptionStopOnThrown = _exceptionStopOnThrown;
-            _callbackHandler.ExceptionStopOnUncaught = _exceptionStopOnUncaught;
-            _callbackHandler.ExceptionTypeFilter = _exceptionTypeFilter;
+            _session.CallbackHandler.ExceptionStopOnThrown = _exceptionStopOnThrown;
+            _session.CallbackHandler.ExceptionStopOnUncaught = _exceptionStopOnUncaught;
+            _session.CallbackHandler.ExceptionTypeFilter = _exceptionTypeFilter;
         }
         return Task.FromResult(new SetExceptionBreakpointsResponse(
             request.Thrown, request.Uncaught, request.Types));
     }
 
+    // ── Inspection ─────────────────────────────────────────────────────
+
     public Task<GetStackTraceResponse> GetStackTraceAsync(GetStackTraceRequest request)
     {
-        EnsureState(DebuggerState.Stopped);
-        var thread = GetThread(request.ThreadId);
+        _currentState.EnsureStopped();
+        var session = RequireSession();
+        var thread = GetThread(request.ThreadId, session);
         var frames = new List<Protocol.StackFrame>();
 
-        _frameMap.Clear();
-        _nextFrameId = 0;
+        session.FrameMap.Clear();
+        session.NextFrameId = 0;
 
         foreach (var chain in thread.EnumerateChains())
         {
@@ -365,7 +350,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
                     var ipResult = ilFrame.IP;
                     ilOffset = (int)ipResult.pnOffset;
 
-                    var reader = GetSymbolReader(module);
+                    var reader = GetSymbolReader(module, session);
                     if (reader != null)
                     {
                         var sp = reader.ResolveSourceLocation((int)function.Token, ilOffset);
@@ -380,8 +365,8 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
                 catch { }
 
                 var name = GetMethodName(module, (int)function.Token);
-                var frameId = _nextFrameId++;
-                _frameMap[frameId] = ilFrame;
+                var frameId = session.NextFrameId++;
+                session.FrameMap[frameId] = ilFrame;
 
                 frames.Add(new Protocol.StackFrame(
                     Id: frameId,
@@ -398,40 +383,41 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
 
     public Task<GetVariablesResponse> GetVariablesAsync(GetVariablesRequest request)
     {
-        EnsureState(DebuggerState.Stopped);
+        _currentState.EnsureStopped();
+        var session = RequireSession();
 
         var variables = new List<Variable>();
-        var valueReader = new Inspection.ValueReader();
+        var valueReader = new ValueReader();
 
         if (request.VariablesReference == 0)
         {
-            if (_frameMap.TryGetValue(0, out var topFrame))
-                variables.AddRange(GetFrameVariables(topFrame, valueReader));
+            if (session.FrameMap.TryGetValue(0, out var topFrame))
+                variables.AddRange(GetFrameVariables(topFrame, valueReader, session));
 
             // Add $exception pseudo-variable if there's a current exception
-            var exVal = GetCurrentExceptionValue();
+            var exVal = GetCurrentExceptionValue(session);
             if (exVal != null)
             {
-                var (displayValue, type, varRef) = valueReader.Read(exVal, _variableStore);
+                var (displayValue, type, varRef) = valueReader.Read(exVal, session.VariableStore);
                 variables.Add(new Variable("$exception", displayValue, varRef, type));
             }
 
             // Add $returnValue pseudo-variable if we just stepped out
-            if (_lastReturnValue != null)
+            if (session.LastReturnValue != null)
             {
-                var (displayValue, type, varRef) = valueReader.Read(_lastReturnValue, _variableStore);
+                var (displayValue, type, varRef) = valueReader.Read(session.LastReturnValue, session.VariableStore);
                 variables.Add(new Variable("$returnValue", displayValue, varRef, type));
             }
         }
-        else if (_frameMap.TryGetValue(request.VariablesReference - 1000000, out var frame))
+        else if (session.FrameMap.TryGetValue(request.VariablesReference - 1000000, out var frame))
         {
-            variables.AddRange(GetFrameVariables(frame, valueReader));
+            variables.AddRange(GetFrameVariables(frame, valueReader, session));
         }
         else
         {
-            var parentValue = _variableStore.Get(request.VariablesReference);
+            var parentValue = session.VariableStore.Get(request.VariablesReference);
             if (parentValue != null)
-                variables.AddRange(valueReader.ExpandChildren(parentValue, _variableStore));
+                variables.AddRange(valueReader.ExpandChildren(parentValue, session.VariableStore));
         }
 
         return Task.FromResult(new GetVariablesResponse(variables.ToArray()));
@@ -439,23 +425,24 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
 
     public async Task<EvaluateResponse> EvaluateAsync(EvaluateRequest request)
     {
-        EnsureState(DebuggerState.Stopped);
+        _currentState.EnsureStopped();
+        var session = RequireSession();
 
-        var frame = (request.FrameId.HasValue && _frameMap.TryGetValue(request.FrameId.Value, out var f)
+        var frame = (request.FrameId.HasValue && session.FrameMap.TryGetValue(request.FrameId.Value, out var f)
             ? f
-            : _frameMap.GetValueOrDefault(0)) ?? throw new LocalRpcException("No frame available for evaluation")
+            : session.FrameMap.GetValueOrDefault(0)) ?? throw new LocalRpcException("No frame available for evaluation")
             { ErrorCode = ErrorCodes.EvaluationFailed };
         var module = frame.Function.Module;
-        var reader = GetSymbolReader(module);
-        var exVal = GetCurrentExceptionValue();
+        var reader = GetSymbolReader(module, session);
+        var exVal = GetCurrentExceptionValue(session);
 
         // Try SimpleEvaluator first (fast path: variable names and field access)
         try
         {
-            var evaluator = new Inspection.SimpleEvaluator();
-            return evaluator.Evaluate(request.Expression, frame, reader, _variableStore, exVal, _lastReturnValue);
+            var evaluator = new SimpleEvaluator();
+            return evaluator.Evaluate(request.Expression, frame, reader, session.VariableStore, exVal, session.LastReturnValue);
         }
-        catch (LocalRpcException) when (_stoppedThread != null)
+        catch (LocalRpcException) when (session.StoppedThread != null)
         {
             // SimpleEvaluator failed — try FuncEvalEvaluator for property/method/arithmetic
         }
@@ -463,10 +450,10 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         // Parse expression AST and evaluate with func-eval
         try
         {
-            var ast = Inspection.ExpressionParser.Parse(request.Expression);
-            var thread = _stoppedThread ?? throw new LocalRpcException("No thread available for evaluation")
+            var ast = ExpressionParser.Parse(request.Expression);
+            var thread = session.StoppedThread ?? throw new LocalRpcException("No thread available for evaluation")
             { ErrorCode = ErrorCodes.EvaluationFailed };
-            var funcEval = new Inspection.FuncEvalEvaluator(this, thread, frame, reader, _variableStore, exVal, _lastReturnValue);
+            var funcEval = new FuncEvalEvaluator(this, thread, frame, reader, session.VariableStore, exVal, session.LastReturnValue);
             return await funcEval.EvaluateAsync(ast);
         }
         catch (FormatException ex)
@@ -478,14 +465,14 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
 
     public Task<GetThreadsResponse> GetThreadsAsync()
     {
-        EnsureState(DebuggerState.Stopped);
+        _currentState.EnsureStopped();
+        var session = RequireSession();
         var threads = new List<ThreadInfo>();
         try
         {
-            var stoppedId = 0;
-            try { stoppedId = _stoppedThread?.Id ?? 0; } catch { }
+            var stoppedId = session.GetStoppedThreadId();
 
-            foreach (var thread in _process!.EnumerateThreads())
+            foreach (var thread in session.Process.EnumerateThreads())
             {
                 try
                 {
@@ -501,8 +488,9 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
 
     public Task<GetExceptionResponse> GetExceptionAsync(GetExceptionRequest request)
     {
-        EnsureState(DebuggerState.Stopped);
-        var thread = GetThread(request.ThreadId);
+        _currentState.EnsureStopped();
+        var session = RequireSession();
+        var thread = GetThread(request.ThreadId, session);
 
         try
         {
@@ -540,6 +528,8 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
             { ErrorCode = ErrorCodes.EvaluationFailed };
         }
     }
+
+    // ── Static helpers for exception field reading ─────────────────────
 
     private static Dictionary<string, mdFieldDef> EnumFieldsByName(
         MetaDataImport import, mdTypeDef typeDef, params string[] names)
@@ -603,6 +593,8 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         catch { return null; }
     }
 
+    // ── IEvalExecutor / Func-eval ─────────────────────────────────────
+
     /// <summary>
     /// Executes a func-eval on the debuggee by calling ICorDebugEval methods,
     /// then waits for the EvalComplete/EvalException callback.
@@ -612,49 +604,53 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         Action<CorDebugEval> setup, CorDebugThread thread, TimeSpan? timeout = null)
     {
         var actualTimeout = timeout ?? TimeSpan.FromSeconds(5);
+        var session = RequireSession();
+        var process = session.Process;
 
         var eval = thread.CreateEval();
-        _evalTcs = new TaskCompletionSource<(CorDebugEval, bool)>(
+        session.EvalTcs = new TaskCompletionSource<(CorDebugEval, bool)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
         setup(eval);
-        _process!.Continue(false);
+
+        // Transition: Stopped → Evaluating
+        lock (_lock) { _currentState = _currentState.StartEval(this); }
+        process.Continue(false);
 
         try
         {
-            var evalTask = _evalTcs.Task;
+            var evalTask = session.EvalTcs.Task;
 
             // Phase 1: Wait for normal completion
             if (await Task.WhenAny(evalTask, Task.Delay(actualTimeout)) == evalTask)
-                return HandleEvalResult(await evalTask);
+                return HandleEvalResult(await evalTask, session);
 
             // Phase 2: Soft abort via ICorDebugEval.Abort()
             try { eval.Abort(); } catch { }
             if (await Task.WhenAny(evalTask, Task.Delay(TimeSpan.FromSeconds(1))) == evalTask)
             {
                 // Abort triggered callback — discard result, throw timeout
-                // Do NOT call Continue — process is stopped at the original position
                 _ = await evalTask;
-                RefreshFrameMap();
+                RefreshFrameMap(session);
                 throw new LocalRpcException(
                     $"Func-eval timed out after {actualTimeout.TotalSeconds}s")
                 { ErrorCode = ErrorCodes.EvaluationFailed };
             }
 
             // Phase 3: Hard stop via ICorDebugProcess.Stop() + re-abort
-            try { _process!.Stop(0); } catch { }
+            try { process.Stop(0); } catch { }
             try { eval.Abort(); } catch { }
             if (await Task.WhenAny(evalTask, Task.Delay(TimeSpan.FromSeconds(1))) == evalTask)
             {
                 _ = await evalTask;
-                RefreshFrameMap();
+                RefreshFrameMap(session);
                 throw new LocalRpcException(
                     $"Func-eval timed out after {actualTimeout.TotalSeconds}s (hard stop)")
                 { ErrorCode = ErrorCodes.EvaluationFailed };
             }
 
             // Phase 4: Give up — force-fail the TCS so we don't hang
-            _evalTcs.TrySetException(new TimeoutException(
+            session.EvalTcs.TrySetException(new TimeoutException(
                 $"Func-eval could not be aborted after {actualTimeout.TotalSeconds}s"));
             throw new LocalRpcException(
                 $"Func-eval timed out and could not be aborted")
@@ -662,19 +658,16 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         }
         finally
         {
-            _evalTcs = null;
+            session.EvalTcs = null;
         }
     }
 
-    private CorDebugValue HandleEvalResult((CorDebugEval Eval, bool Success) result)
+    private CorDebugValue HandleEvalResult((CorDebugEval Eval, bool Success) result, DebugSession session)
     {
-        RefreshFrameMap();
+        RefreshFrameMap(session);
 
         if (!result.Success)
         {
-            // Do NOT call Continue — process stays stopped at the original position
-            // so the user can inspect state or retry. The next user operation (continue,
-            // step, or another eval) will provide the Continue that ICorDebug needs.
             throw new LocalRpcException("Func-eval threw an exception in the debuggee")
             { ErrorCode = ErrorCodes.EvaluationFailed };
         }
@@ -682,39 +675,48 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         return result.Eval.Result;
     }
 
-    private void ApplyExceptionBreakpointSettings()
+    // ── Callback wiring ────────────────────────────────────────────────
+
+    private static void ApplyExceptionBreakpointSettings(ManagedCallbackHandler handler,
+        bool stopOnThrown, bool stopOnUncaught, string[]? typeFilter)
     {
-        _callbackHandler!.ExceptionStopOnThrown = _exceptionStopOnThrown;
-        _callbackHandler.ExceptionStopOnUncaught = _exceptionStopOnUncaught;
-        _callbackHandler.ExceptionTypeFilter = _exceptionTypeFilter;
+        handler.ExceptionStopOnThrown = stopOnThrown;
+        handler.ExceptionStopOnUncaught = stopOnUncaught;
+        handler.ExceptionTypeFilter = typeFilter;
     }
 
-    private void WireCallbackEvents()
+    private void ApplyExceptionBreakpointSettings(ManagedCallbackHandler handler)
     {
-        _callbackHandler!.OnStopped += (thread, reason, description) =>
+        ApplyExceptionBreakpointSettings(handler,
+            _exceptionStopOnThrown, _exceptionStopOnUncaught, _exceptionTypeFilter);
+    }
+
+    private void WireCallbackEvents(ManagedCallbackHandler handler)
+    {
+        handler.OnStopped += (thread, reason, description) =>
         {
+            var session = _session;
+            if (session == null) return;
+
             // Quick hit-count check before full state setup
-            if (reason == StopReason.Breakpoint && _callbackHandler.LastHitBreakpoint != null)
+            if (reason == StopReason.Breakpoint && handler.LastHitBreakpoint != null)
             {
                 var (shouldStop, bpId, condition) =
-                    _breakpointManager.CheckBreakpointHit(_callbackHandler.LastHitBreakpoint);
-                _callbackHandler.LastHitBreakpoint = null;
+                    _breakpointManager.CheckBreakpointHit(handler.LastHitBreakpoint);
+                handler.LastHitBreakpoint = null;
 
                 if (!shouldStop)
                 {
                     // Hit count not reached — auto-continue without stopping
-                    _process!.Continue(false);
+                    session.Process.Continue(false);
                     return;
                 }
 
                 // Set up stopped state
                 lock (_lock)
                 {
-                    _stoppedThread = thread;
-                    _state = DebuggerState.Stopped;
-                    _variableStore.Clear();
-                    _frameMap.Clear();
-                    _nextFrameId = 0;
+                    session.SetStopState(thread);
+                    _currentState = _currentState.OnBreak(this);
                 }
 
                 var threadId = 0;
@@ -733,36 +735,33 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
             }
 
             // Suppress duplicate Step callback from double StepComplete+Breakpoint
-            if (reason == StopReason.Step && _suppressNextStepCallback)
+            if (reason == StopReason.Step && session.SuppressNextStepCallback)
             {
-                _suppressNextStepCallback = false;
-                _process?.Continue(false);
+                session.SuppressNextStepCallback = false;
+                session.Process.Continue(false);
                 return;
             }
 
             // Non-breakpoint stops (step, pause, exception, entry)
             lock (_lock)
             {
-                _stoppedThread = thread;
-                _state = DebuggerState.Stopped;
-                _variableStore.Clear();
-                _frameMap.Clear();
-                _nextFrameId = 0;
+                session.SetStopState(thread);
+                _currentState = _currentState.OnBreak(this);
             }
 
             // Capture return value after StepOut
-            if (reason == StopReason.Step && _pendingStepOut)
+            if (reason == StopReason.Step && session.PendingStepOut)
             {
-                _pendingStepOut = false;
-                TryCaptureReturnValue(thread);
-                CleanupReturnValueBreakpoints();
+                session.PendingStepOut = false;
+                TryCaptureReturnValue(thread, session);
+                CleanupReturnValueBreakpoints(session);
                 // Both StepComplete and Breakpoint callbacks may fire — suppress the second
-                _suppressNextStepCallback = true;
+                session.SuppressNextStepCallback = true;
             }
             else
             {
-                _pendingStepOut = false;
-                CleanupReturnValueBreakpoints();
+                session.PendingStepOut = false;
+                CleanupReturnValueBreakpoints(session);
             }
 
             var tid = 0;
@@ -772,79 +771,63 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
                 new StoppedNotification(reason, tid, description)));
         };
 
-        _callbackHandler.OnProcessExited += (exitCode) =>
+        handler.OnProcessExited += (exitCode) =>
         {
-            lock (_lock)
-            {
-                _state = DebuggerState.Terminated;
-                if (_exitedEventFired) return;
-                _exitedEventFired = true;
-            }
-
-            // Release module resources to unlock DLL/PDB files
-            foreach (var (_, (_, reader)) in _modules)
-                reader?.Dispose();
-            _modules.Clear();
-
-            try { _corDebug?.Terminate(); }
-            catch { }
-            _corDebug = null;
-
-            // Release COM object references so the GC can finalize RCWs
-            // and release any remaining file handles held by ICorDebug.
-            // Without this, DLL files stay locked until the process exits.
-            _callbackHandler = null!;
-            _process = null;
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
-
-            Exited?.Invoke(this, new ExitedEventArgs(new ExitedNotification(exitCode)));
+            _currentState = _currentState.OnProcessExited(this, exitCode);
         };
 
-        _callbackHandler.OnModuleLoaded += (module) =>
+        handler.OnModuleLoaded += (module) =>
         {
+            var session = _session;
+            if (session == null) return;
+
             var moduleName = module.Name;
             if (string.IsNullOrEmpty(moduleName)) return;
 
             var reader = Symbols.SymbolReaderFactory.Create(moduleName);
-            _modules[moduleName] = (module, reader);
-            _breakpointManager?.OnModuleLoaded(moduleName, module, reader);
+            session.Modules[moduleName] = (module, reader);
+            _breakpointManager.OnModuleLoaded(moduleName, module, reader);
 
             // Handle stopAtEntry: set entry breakpoint when the target module loads
-            if (_stopAtEntry && _callbackHandler!.EntryBreakpoint == null && _programPath != null)
+            if (session.StopAtEntry && handler.EntryBreakpoint == null && session.ProgramPath != null)
             {
                 try
                 {
                     var normalizedModule = Path.GetFullPath(moduleName);
-                    if (string.Equals(normalizedModule, _programPath, StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(normalizedModule, session.ProgramPath, StringComparison.OrdinalIgnoreCase))
                     {
-                        SetEntryPointBreakpoint(module);
+                        SetEntryPointBreakpoint(module, handler);
                     }
                 }
                 catch { }
             }
         };
 
-        _callbackHandler.OnEvalCompleted += (thread, eval, success) =>
+        handler.OnEvalCompleted += (thread, eval, success) =>
         {
-            // After eval completes, we're back in stopped state
-            lock (_lock) { _state = DebuggerState.Stopped; }
-            _evalTcs?.TrySetResult((eval, success));
+            var session = _session;
+            // Transition: Evaluating → Stopped
+            lock (_lock) { _currentState = _currentState.OnEvalComplete(this); }
+            session?.EvalTcs?.TrySetResult((eval, success));
         };
     }
 
-    private CorDebugThread GetThread(int? threadId)
+    // ── Private helpers ────────────────────────────────────────────────
+
+    private DebugSession RequireSession()
+        => _session ?? throw new InvalidOperationException("No active debug session");
+
+    private CorDebugThread GetThread(int? threadId, DebugSession session)
     {
-        if (threadId.HasValue && _process != null)
+        if (threadId.HasValue)
         {
-            try { return _process.GetThread(threadId.Value); }
+            try { return session.Process.GetThread(threadId.Value); }
             catch { }
         }
-        return _stoppedThread ?? throw new InvalidOperationException("No thread available.");
+        return session.StoppedThread ?? throw new InvalidOperationException("No thread available.");
     }
 
-    private COR_DEBUG_STEP_RANGE[] GetStepRanges(CorDebugILFrame frame)
+    private COR_DEBUG_STEP_RANGE[] GetStepRanges(CorDebugILFrame frame, DebugSession session)
     {
         try
         {
@@ -853,7 +836,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
 
             var function = frame.Function;
             var module = function.Module;
-            var reader = GetSymbolReader(module);
+            var reader = GetSymbolReader(module, session);
             if (reader == null) return [];
 
             var sequencePoints = reader.GetSequencePoints((int)function.Token);
@@ -881,14 +864,14 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         return [];
     }
 
-    private Symbols.ISymbolReader? GetSymbolReader(CorDebugModule module)
+    private static Symbols.ISymbolReader? GetSymbolReader(CorDebugModule module, DebugSession session)
     {
         var name = module.Name;
         if (string.IsNullOrEmpty(name)) return null;
-        return _modules.TryGetValue(name, out var entry) ? entry.Reader : null;
+        return session.Modules.TryGetValue(name, out var entry) ? entry.Reader : null;
     }
 
-    private string GetMethodName(CorDebugModule module, int methodToken)
+    private static string GetMethodName(CorDebugModule module, int methodToken)
     {
         try
         {
@@ -912,16 +895,19 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     private async Task EvaluateBreakpointConditionAsync(
         int? breakpointId, int threadId, string condition)
     {
+        var session = _session;
+        if (session == null) return;
+
         // Populate the top frame so EvaluateAsync can access locals
         try
         {
-            var thread = _stoppedThread;
+            var thread = session.StoppedThread;
             if (thread != null)
             {
-                if (thread.ActiveFrame is CorDebugILFrame activeFrame && !_frameMap.ContainsKey(0))
+                if (thread.ActiveFrame is CorDebugILFrame activeFrame && !session.FrameMap.ContainsKey(0))
                 {
-                    _frameMap[0] = activeFrame;
-                    _nextFrameId = 1;
+                    session.FrameMap[0] = activeFrame;
+                    session.NextFrameId = 1;
                 }
             }
         }
@@ -948,23 +934,23 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
             return;
         }
 
-        // Condition was false — auto-continue
+        // Condition was false — auto-continue via normal state transitions
+        // EvaluateAsync already transitions back to Stopped (via OnEvalComplete or stays Stopped)
         lock (_lock)
         {
-            _stoppedThread = null;
-            _variableStore.Clear();
-            _frameMap.Clear();
-            _nextFrameId = 0;
-            _state = DebuggerState.Running;
+            session.StoppedThread = null;
+            session.VariableStore.Clear();
+            session.FrameMap.Clear();
+            session.NextFrameId = 0;
+            _currentState = _currentState.Resume(this);
         }
-        _process!.Continue(false);
     }
 
-    private CorDebugValue? GetCurrentExceptionValue()
+    private static CorDebugValue? GetCurrentExceptionValue(DebugSession session)
     {
         try
         {
-            var exValue = _stoppedThread?.CurrentException;
+            var exValue = session.StoppedThread?.CurrentException;
             if (exValue == null) return null;
             // Verify it's not a null reference
             if (exValue is CorDebugReferenceValue refVal && refVal.IsNull) return null;
@@ -979,9 +965,9 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     /// works when a breakpoint is set at the native offset returned by
     /// GetReturnValueLiveOffset.
     /// </summary>
-    private void SetupReturnValueBreakpoints(CorDebugThread thread)
+    private static void SetupReturnValueBreakpoints(CorDebugThread thread, DebugSession session)
     {
-        _returnValueBreakpoints = null;
+        session.ReturnValueBreakpoints = null;
         try
         {
             var currentFrame = thread.ActiveFrame;
@@ -999,7 +985,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
 
             // Find the call instruction. The caller frame's IP may not point directly
             // at the call — probe forward from the IP to find the actual call site.
-            int[] nativeOffsets = null!;
+            int[]? nativeOffsets = null;
             bool found = false;
             for (int probe = callILOffset; probe <= callILOffset + 20; probe++)
             {
@@ -1012,7 +998,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
                     break;
                 }
             }
-            if (!found) return;
+            if (!found || nativeOffsets == null) return;
 
             var breakpoints = new List<CorDebugFunctionBreakpoint>();
             foreach (var nativeOffset in nativeOffsets)
@@ -1028,13 +1014,10 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
 
             if (breakpoints.Count > 0)
             {
-                _returnValueCallILOffset = callILOffset;
-                _returnValueBreakpoints = breakpoints;
-                if (_callbackHandler != null)
-                {
-                    foreach (var bp in breakpoints)
-                        _callbackHandler.ReturnValueBreakpoints.Add(bp);
-                }
+                session.ReturnValueCallILOffset = callILOffset;
+                session.ReturnValueBreakpoints = breakpoints;
+                foreach (var bp in breakpoints)
+                    session.CallbackHandler.ReturnValueBreakpoints.Add(bp);
             }
         }
         catch { }
@@ -1044,16 +1027,16 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     /// After StepOut completes, capture the return value using
     /// ICorDebugILFrame3.GetReturnValueForILOffset with the pre-stored call site offset.
     /// </summary>
-    private void TryCaptureReturnValue(CorDebugThread thread)
+    private static void TryCaptureReturnValue(CorDebugThread? thread, DebugSession session)
     {
-        if (_returnValueBreakpoints == null) return;
+        if (session.ReturnValueBreakpoints == null) return;
         try
         {
-            if (thread.ActiveFrame is not CorDebugILFrame frame) return;
+            if (thread?.ActiveFrame is not CorDebugILFrame frame) return;
 
-            var retHr = frame.TryGetReturnValueForILOffset(_returnValueCallILOffset, out var retVal);
+            var retHr = frame.TryGetReturnValueForILOffset(session.ReturnValueCallILOffset, out var retVal);
             if (retHr == ClrDebug.HRESULT.S_OK && retVal != null)
-                _lastReturnValue = retVal;
+                session.LastReturnValue = retVal;
         }
         catch { }
     }
@@ -1061,17 +1044,14 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     /// <summary>
     /// Deactivate and remove hidden return-value native breakpoints.
     /// </summary>
-    private void CleanupReturnValueBreakpoints()
+    private static void CleanupReturnValueBreakpoints(DebugSession session)
     {
-        var breakpoints = _returnValueBreakpoints;
-        _returnValueBreakpoints = null;
+        var breakpoints = session.ReturnValueBreakpoints;
+        session.ReturnValueBreakpoints = null;
         if (breakpoints == null) return;
 
-        if (_callbackHandler != null)
-        {
-            foreach (var bp in breakpoints)
-                _callbackHandler.ReturnValueBreakpoints.Remove(bp);
-        }
+        foreach (var bp in breakpoints)
+            session.CallbackHandler.ReturnValueBreakpoints.Remove(bp);
 
         foreach (var bp in breakpoints)
         {
@@ -1079,11 +1059,11 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         }
     }
 
-    private List<Variable> GetFrameVariables(CorDebugILFrame frame, Inspection.ValueReader valueReader)
+    private static List<Variable> GetFrameVariables(CorDebugILFrame frame, ValueReader valueReader, DebugSession session)
     {
         var variables = new List<Variable>();
         var module = frame.Function.Module;
-        var reader = GetSymbolReader(module);
+        var reader = GetSymbolReader(module, session);
 
         int ilOffset;
         try
@@ -1104,7 +1084,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
                 try
                 {
                     var value = frame.GetLocalVariable(localInfo.SlotIndex);
-                    var (displayValue, type, varRef) = valueReader.Read(value, _variableStore);
+                    var (displayValue, type, varRef) = valueReader.Read(value, session.VariableStore);
                     variables.Add(new Variable(localInfo.Name, displayValue, varRef, type));
                 }
                 catch { }
@@ -1123,7 +1103,7 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
                 {
                     var value = frame.GetArgument(i);
                     var name = i < paramNames.Count ? paramNames[i] : $"arg{i}";
-                    var (displayValue, type, varRef) = valueReader.Read(value, _variableStore);
+                    var (displayValue, type, varRef) = valueReader.Read(value, session.VariableStore);
                     variables.Add(new Variable(name, displayValue, varRef, type));
                 }
                 catch { break; }
@@ -1161,101 +1141,47 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
         return names;
     }
 
-    private void EnsureState(DebuggerState expectedState)
+    private static void RefreshFrameMap(DebugSession session)
     {
-        if (_state != expectedState)
-        {
-            var errorCode = _state switch
-            {
-                DebuggerState.NotStarted => ErrorCodes.NotAttached,
-                DebuggerState.Running => expectedState == DebuggerState.Stopped
-                    ? ErrorCodes.ProcessNotStopped : ErrorCodes.ProcessRunning,
-                DebuggerState.Stopped => ErrorCodes.ProcessRunning,
-                DebuggerState.Terminated => ErrorCodes.NotAttached,
-                _ => ErrorCodes.NotAttached
-            };
-            throw new LocalRpcException($"Invalid state: expected {expectedState}, got {_state}")
-            { ErrorCode = errorCode };
-        }
-    }
+        session.FrameMap.Clear();
+        session.NextFrameId = 0;
+        session.VariableStore.Clear();
 
-    private void EnsureNotTerminated()
-    {
-        if (_state == DebuggerState.Terminated)
-            throw new LocalRpcException("Process has terminated") { ErrorCode = ErrorCodes.NotAttached };
-        if (_state == DebuggerState.NotStarted)
-            throw new LocalRpcException("No process attached") { ErrorCode = ErrorCodes.NotAttached };
-    }
-
-    private void EnsureNotTerminatedForBreakpoints()
-    {
-        if (_state == DebuggerState.Terminated)
-            throw new LocalRpcException("Process has terminated") { ErrorCode = ErrorCodes.NotAttached };
-    }
-
-    private void ClearStopState()
-    {
-        _variableStore.Clear();
-        _frameMap.Clear();
-        _nextFrameId = 0;
-        _lastReturnValue = null;
-        _suppressNextStepCallback = false;
-    }
-
-    private void RefreshFrameMap()
-    {
-        _frameMap.Clear();
-        _nextFrameId = 0;
-        _variableStore.Clear();
-
-        if (_stoppedThread == null) return;
-
+        if (session.StoppedThread == null) return;
         try
         {
-            foreach (var chain in _stoppedThread.EnumerateChains())
+            foreach (var chain in session.StoppedThread.EnumerateChains())
             {
                 if (!chain.IsManaged) continue;
                 foreach (var frame in chain.EnumerateFrames())
                 {
-                    if (frame is not CorDebugILFrame ilFrame) continue;
-                    _frameMap[_nextFrameId++] = ilFrame;
+                    if (frame is CorDebugILFrame ilFrame)
+                    {
+                        session.FrameMap[session.NextFrameId++] = ilFrame;
+                    }
                 }
             }
         }
         catch { }
     }
 
-    private void SetEntryPointBreakpoint(CorDebugModule module)
+    private static void SetEntryPointBreakpoint(CorDebugModule module, ManagedCallbackHandler handler)
     {
         try
         {
-            var modulePath = module.Name;
-
-            // Read the entry point token from the PE header
-            using var fs = File.OpenRead(modulePath);
-            using var peReader = new PEReader(fs);
+            using var peStream = File.OpenRead(module.Name);
+            var peReader = new PEReader(peStream);
             var corHeader = peReader.PEHeaders.CorHeader;
             if (corHeader == null) return;
 
             var entryPointToken = corHeader.EntryPointTokenOrRelativeVirtualAddress;
             if (entryPointToken == 0) return;
 
-            // Find the first non-hidden sequence point so the breakpoint has source info
-            int ilOffset = 0;
-            var reader = GetSymbolReader(module);
-            if (reader != null)
-            {
-                var seqPoints = reader.GetSequencePoints(entryPointToken);
-                if (seqPoints.Count > 0)
-                    ilOffset = seqPoints[0].ILOffset;
-            }
-
             var function = module.GetFunctionFromToken((mdMethodDef)entryPointToken);
             var code = function.ILCode;
-            var bp = code.CreateBreakpoint(ilOffset);
+            var bp = code.CreateBreakpoint(0);
             bp.Activate(true);
-
-            _callbackHandler!.EntryBreakpoint = bp;
+            handler.EntryBreakpoint = bp;
         }
         catch { }
     }
@@ -1283,19 +1209,16 @@ public class DebuggerEngine : IDebuggerEngine, IDisposable
     {
         try
         {
-            if (_state != DebuggerState.Terminated && _state != DebuggerState.NotStarted)
+            var stateId = _currentState.Id;
+            if (stateId != DebuggerState.Terminated && stateId != DebuggerState.NotStarted)
             {
-                _process?.Stop(1000);
-                _process?.Terminate(0);
+                _session?.Process.Stop(1000);
+                _session?.Process.Terminate(0);
             }
         }
         catch { }
 
-        foreach (var (_, (_, reader)) in _modules)
-            reader?.Dispose();
-        _modules.Clear();
-
-        try { _corDebug?.Terminate(); }
-        catch { }
+        _session?.Dispose();
+        _session = null;
     }
 }
