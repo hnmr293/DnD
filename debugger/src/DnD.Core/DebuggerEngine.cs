@@ -1095,14 +1095,14 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         {
             var import = module.GetMetaDataInterface<MetaDataImport>();
             var methodToken = (mdMethodDef)frame.Function.Token;
-            var paramNames = GetParameterNames(import, methodToken);
+            var argNameMap = GetArgumentNameMap(import, methodToken);
 
             for (int i = 0; ; i++)
             {
                 try
                 {
                     var value = frame.GetArgument(i);
-                    var name = i < paramNames.Count ? paramNames[i] : $"arg{i}";
+                    var name = argNameMap.GetValueOrDefault(i, $"arg{i}");
                     var (displayValue, type, varRef) = valueReader.Read(value, session.VariableStore);
                     variables.Add(new Variable(name, displayValue, varRef, type));
                 }
@@ -1114,9 +1114,15 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         return variables;
     }
 
-    private static List<string> GetParameterNames(MetaDataImport import, mdMethodDef methodToken)
+    private static Dictionary<int, string> GetArgumentNameMap(MetaDataImport import, mdMethodDef methodToken)
     {
-        var names = new List<string>();
+        var map = new Dictionary<int, string>();
+        var methodProps = import.GetMethodProps(methodToken);
+        bool isStatic = methodProps.pdwAttr.HasFlag(CorMethodAttr.mdStatic);
+
+        if (!isStatic)
+            map[0] = "this";
+
         var enumHandle = IntPtr.Zero;
         var paramTokens = new mdParamDef[32];
         try
@@ -1127,7 +1133,13 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
                 for (int i = 0; i < count; i++)
                 {
                     var props = import.GetParamProps(paramTokens[i]);
-                    names.Add(props.szName);
+                    if (props.pulSequence > 0)
+                    {
+                        int argIndex = isStatic
+                            ? props.pulSequence - 1
+                            : props.pulSequence;
+                        map[argIndex] = props.szName;
+                    }
                 }
                 count = import.EnumParams(ref enumHandle, methodToken, paramTokens);
             }
@@ -1138,7 +1150,7 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         {
             try { if (enumHandle != IntPtr.Zero) import.CloseEnum(enumHandle); } catch { }
         }
-        return names;
+        return map;
     }
 
     private static void RefreshFrameMap(DebugSession session)
