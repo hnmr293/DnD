@@ -137,24 +137,27 @@ public class FuncEvalEvaluator
             var module = _frame.Function.Module;
             var import = module.GetMetaDataInterface<MetaDataImport>();
             var methodToken = (mdMethodDef)_frame.Function.Token;
+            var methodProps = import.GetMethodProps(methodToken);
+            bool isStatic = methodProps.pdwAttr.HasFlag(CorMethodAttr.mdStatic);
             var enumHandle = IntPtr.Zero;
             var paramTokens = new mdParamDef[32];
             try
             {
                 var count = import.EnumParams(ref enumHandle, methodToken, paramTokens);
-                int paramIndex = 0;
                 while (count > 0)
                 {
                     for (int i = 0; i < count; i++)
                     {
                         var props = import.GetParamProps(paramTokens[i]);
-                        if (props.szName == name)
+                        if (props.szName == name && props.pulSequence > 0)
                         {
+                            int paramArgIndex = isStatic
+                                ? props.pulSequence - 1
+                                : props.pulSequence;
                             if (enumHandle != IntPtr.Zero) import.CloseEnum(enumHandle);
-                            try { return _frame.GetArgument(paramIndex); }
+                            try { return _frame.GetArgument(paramArgIndex); }
                             catch { return null; }
                         }
-                        paramIndex++;
                     }
                     count = import.EnumParams(ref enumHandle, methodToken, paramTokens);
                 }
