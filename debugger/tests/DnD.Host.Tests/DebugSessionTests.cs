@@ -538,4 +538,80 @@ public class DebugSessionTests : DebugTestBase
 
         Assert.Contains("Invalid state", ex.Message);
     }
+
+    // === Detach then re-launch ===
+
+    [Fact]
+    public async Task Detach_ThenRelaunch_ShouldSucceed()
+    {
+        var program = FindFixture("VariablesTest");
+        await Rpc!.InvokeWithParameterObjectAsync<LaunchResponse>(
+            "launch", new LaunchRequest(Program: program));
+
+        var stopped = WaitForStopped();
+        await Rpc!.InvokeAsync("detach");
+
+        var result = await Rpc!.InvokeWithParameterObjectAsync<LaunchResponse>(
+            "launch", new LaunchRequest(Program: program));
+
+        Assert.True(result.ProcessId > 0);
+    }
+
+    // === Instance method parameter names ===
+
+    [Fact]
+    public async Task GetVariables_InstanceMethod_ShowsThisAndDeclaredParamNames()
+    {
+        var program = FindFixture("InstanceMethodTest");
+        await Rpc!.InvokeWithParameterObjectAsync<LaunchResponse>(
+            "launch", new LaunchRequest(Program: program));
+
+        var stopped = WaitForStopped();
+        Assert.Equal(StopReason.Pause, stopped.Reason);
+
+        await Rpc!.InvokeWithParameterObjectAsync<GetStackTraceResponse>(
+            "getStackTrace", new GetStackTraceRequest(ThreadId: stopped.ThreadId));
+
+        var vars = await Rpc!.InvokeWithParameterObjectAsync<GetVariablesResponse>(
+            "getVariables", new GetVariablesRequest(VariablesReference: 0));
+
+        var names = vars.Variables.Select(v => v.Name).ToList();
+
+        Assert.Contains("this", names);
+        Assert.Contains("factor", names);
+        Assert.DoesNotContain("arg1", names);
+    }
+
+    // === Object expansion: computed-property-only class ===
+
+    [Fact]
+    public async Task GetVariables_ExpandComputedPropertyObject_ReturnsProperties()
+    {
+        // ComputedOnly has properties (Value, Label) but no backing fields.
+        // ExpandChildren only enumerates fields → returns empty for this type.
+        // Bug: object expansion should show properties, not just fields.
+        var program = FindFixture("VariablesTest");
+        await Rpc!.InvokeWithParameterObjectAsync<LaunchResponse>(
+            "launch", new LaunchRequest(Program: program));
+
+        var stopped = WaitForStopped();
+        await Rpc!.InvokeWithParameterObjectAsync<GetStackTraceResponse>(
+            "getStackTrace", new GetStackTraceRequest(ThreadId: stopped.ThreadId));
+
+        var vars = await Rpc!.InvokeWithParameterObjectAsync<GetVariablesResponse>(
+            "getVariables", new GetVariablesRequest(VariablesReference: 0));
+
+        var computed = vars.Variables.FirstOrDefault(v => v.Name == "computed");
+        Assert.NotNull(computed);
+        Assert.True(computed.VariablesReference > 0,
+            "ComputedOnly object should be expandable (has variablesReference)");
+
+        var children = await Rpc!.InvokeWithParameterObjectAsync<GetVariablesResponse>(
+            "getVariables", new GetVariablesRequest(
+                VariablesReference: computed.VariablesReference));
+
+        // Should show Value and Label properties
+        Assert.NotEmpty(children.Variables);
+    }
+
 }

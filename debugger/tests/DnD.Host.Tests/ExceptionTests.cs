@@ -180,4 +180,5 @@ public class ExceptionTests : DebugTestBase
         var exited = await ExitedTcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.NotEqual(0, exited.ExitCode);
     }
+
 }

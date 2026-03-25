@@ -304,4 +304,24 @@ public class EvalTests : DebugTestBase
 
         Assert.Contains("not found", ex.Message);
     }
+
+    // === Chained property access with variable in argument ===
+
+    [Fact]
+    public async Task Evaluate_ChainedPropertyThenLocalInArg()
+    {
+        // obj.Name resolves via property getter func-eval (auto-property
+        // backing field is <Name>k__BackingField, not "Name", so TryGetField
+        // fails and FindPropertyGetter triggers ExecuteEvalAsync).
+        // After func-eval, HandleEvalResult calls RefreshFrameMap which
+        // invalidates the FuncEvalEvaluator's held _frame reference.
+        // Resolving 'greeting' in the argument then fails because
+        // _frame.GetLocalVariable() on the stale frame throws.
+        // Bug: "Variable 'greeting' not found"
+        var result = await Rpc!.InvokeWithParameterObjectAsync<EvaluateResponse>(
+            "evaluate", new EvaluateRequest(Expression: "obj.Name.Contains(greeting)"));
+
+        // "test".Contains("Hello, World!") → false
+        Assert.Equal("false", result.Result);
+    }
 }

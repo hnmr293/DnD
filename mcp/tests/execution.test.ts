@@ -369,6 +369,17 @@ describe("ClientManager state transitions for waitForStop", () => {
     expect(snap.exitCode).toBeUndefined();
   });
 
+  it("state should be running after attach", async () => {
+    manager = new ClientManager({ hostPath: HOST_PATH, stub: true });
+    const client = await manager.ensureClient();
+
+    // The attach tool handler (process.ts) does not call markRunning(),
+    // unlike the launch tool handler which does.
+    await client.attach({ processId: 1234 });
+
+    expect(manager.state).toBe("running");
+  });
+
   it("ensureClient after exited creates fresh client", async () => {
     manager = new ClientManager({ hostPath: HOST_PATH, stub: true });
     const client1 = await manager.ensureClient();

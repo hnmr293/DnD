@@ -11,7 +11,19 @@ class Program
         bool flag = true;
         int[] arr = new[] { 1, 2, 3 };
         var obj = new { Name = "test", Value = 100 };
+        var computed = new ComputedOnly();
         Debugger.Break(); // stops here
-        Console.WriteLine($"{x} {name} {pi} {flag}");
+        Console.WriteLine($"{x} {name} {pi} {flag} {computed.Value}");
     }
+}
+
+/// <summary>
+/// Class with computed properties only (no backing fields).
+/// Used to test object expansion via getVariables — ExpandChildren
+/// only enumerates fields, so this class returns empty on expansion.
+/// </summary>
+class ComputedOnly
+{
+    public int Value => 42;
+    public string Label => "computed";
 }
