@@ -49,14 +49,18 @@ export function registerProcessTools(
           content: [
             {
               type: "text" as const,
-              text: formatStoppedResponse(event.params, topFrame) + hostPidLine + outputLine,
+              text:
+                formatStoppedResponse(event.params, topFrame) +
+                hostPidLine +
+                outputLine,
             },
           ],
         };
       }
 
       // Process ran to completion without stopping
-      const exitText = formatExitedResponse(event.params) + hostPidLine + outputLine;
+      const exitText =
+        formatExitedResponse(event.params) + hostPidLine + outputLine;
       await clientManager.dispose();
       return {
         content: [{ type: "text" as const, text: exitText }],
@@ -73,6 +77,7 @@ export function registerProcessTools(
     async (params) => {
       const client = await clientManager.ensureClient();
       const result = await client.attach(params);
+      clientManager.markRunning();
       const hostPidLine = clientManager.hostPid
         ? `\nDebugger host PID: ${clientManager.hostPid}`
         : "";
@@ -100,7 +105,9 @@ export function registerProcessTools(
       await clientManager.dispose();
       const pidInfo = hostPid ? ` (host PID was ${hostPid})` : "";
       return {
-        content: [{ type: "text" as const, text: `Detached from process${pidInfo}` }],
+        content: [
+          { type: "text" as const, text: `Detached from process${pidInfo}` },
+        ],
       };
     },
   );
