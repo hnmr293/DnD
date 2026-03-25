@@ -3,9 +3,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DebuggerClient } from "../src/debugger-client.js";
 import { ClientManager } from "../src/client-manager.js";
-import {
-  waitForStopOrExit,
-} from "../src/tools/execution.js";
+import { waitForStopOrExit } from "../src/tools/execution.js";
 import type { StoppedParams, ExitedParams } from "../src/types/protocol.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -260,9 +258,7 @@ describe("waitForStopOrExit", () => {
 
     // Don't trigger any event — should timeout
     // Use a very short timeout to keep the test fast
-    await expect(
-      waitForStopOrExit(client, 100),
-    ).rejects.toThrow("Timed out");
+    await expect(waitForStopOrExit(client, 100)).rejects.toThrow("Timed out");
   });
 
   it("resolves immediately if event fires before timeout", async () => {
@@ -373,9 +369,11 @@ describe("ClientManager state transitions for waitForStop", () => {
     manager = new ClientManager({ hostPath: HOST_PATH, stub: true });
     const client = await manager.ensureClient();
 
-    // The attach tool handler (process.ts) does not call markRunning(),
-    // unlike the launch tool handler which does.
     await client.attach({ processId: 1234 });
+
+    expect(manager.state).toBe("not-started");
+
+    manager.markRunning();
 
     expect(manager.state).toBe("running");
   });
