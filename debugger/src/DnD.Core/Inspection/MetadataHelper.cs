@@ -53,6 +53,41 @@ public static class MetadataHelper
     }
 
     /// <summary>
+    /// Find a method by name and argument count on any value's exact runtime type.
+    /// Uses ICorDebugValue2.GetExactType to walk the type hierarchy.
+    /// Works for CorDebugStringValue and other non-object value types.
+    /// </summary>
+    public static CorDebugFunction? FindMethodByExactType(CorDebugValue value, string methodName, int argCount)
+    {
+        try
+        {
+            var val2 = (ICorDebugValue2)value.Raw;
+            val2.GetExactType(out var currentType);
+
+            int depth = 0;
+            while (currentType != null && depth++ < 20)
+            {
+                ICorDebugClass? cls;
+                try
+                {
+                    currentType.GetClass(out cls);
+                    if (cls == null) break;
+                }
+                catch { break; }
+
+                var clsWrapper = new CorDebugClass(cls);
+                var result = FindMethodInClass(clsWrapper, methodName, argCount);
+                if (result != null) return result;
+
+                try { currentType.GetBase(out currentType); }
+                catch { break; }
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>
     /// Find a method by name on a given class (CorDebugClass), searching the class token.
     /// </summary>
     public static CorDebugFunction? FindMethodInClass(CorDebugClass classType, string methodName, int argCount)

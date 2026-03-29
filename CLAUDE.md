@@ -33,7 +33,7 @@ All commands must be run from the repository root.
 ```bash
 dotnet build debugger/DnD.slnx
 dotnet test debugger/tests/DnD.Core.Tests           # Unit tests (fast, ~1s)
-dotnet test debugger/tests/DnD.Host.Tests           # E2E tests (slow, ~3min, spawns real debugger processes)
+dotnet test debugger/tests/DnD.Host.Tests           # Integration tests (slow, ~3min, spawns real debugger processes)
 ```
 
 ### TypeScript MCP server

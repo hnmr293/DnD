@@ -24,17 +24,19 @@ public class FuncEvalEvaluator
 {
     private readonly IEvalExecutor _evalExecutor;
     private readonly CorDebugThread _thread;
-    private readonly CorDebugILFrame _frame;
+    private readonly Func<CorDebugILFrame> _frameAccessor;
     private readonly ISymbolReader? _reader;
     private readonly VariableStore _store;
     private readonly CorDebugValue? _exceptionValue;
     private readonly CorDebugValue? _returnValue;
     private readonly ValueReader _valueReader = new();
 
+    private CorDebugILFrame Frame => _frameAccessor();
+
     public FuncEvalEvaluator(
         IEvalExecutor evalExecutor,
         CorDebugThread thread,
-        CorDebugILFrame frame,
+        Func<CorDebugILFrame> frameAccessor,
         ISymbolReader? reader,
         VariableStore store,
         CorDebugValue? exceptionValue = null,
@@ -42,7 +44,7 @@ public class FuncEvalEvaluator
     {
         _evalExecutor = evalExecutor;
         _thread = thread;
-        _frame = frame;
+        _frameAccessor = frameAccessor;
         _reader = reader;
         _store = store;
         _exceptionValue = exceptionValue;
@@ -108,7 +110,7 @@ public class FuncEvalEvaluator
         // Delegate to SimpleEvaluator's variable resolution logic
         if (name == "this")
         {
-            try { return _frame.GetArgument(0); }
+            try { return Frame.GetArgument(0); }
             catch { return null; }
         }
 
@@ -116,14 +118,14 @@ public class FuncEvalEvaluator
         {
             try
             {
-                var ipResult = _frame.IP;
+                var ipResult = Frame.IP;
                 var ilOffset = (int)ipResult.pnOffset;
-                var locals = _reader.GetLocalVariables((int)_frame.Function.Token, ilOffset);
+                var locals = _reader.GetLocalVariables((int)Frame.Function.Token, ilOffset);
                 foreach (var local in locals)
                 {
                     if (local.Name == name)
                     {
-                        try { return _frame.GetLocalVariable(local.SlotIndex); }
+                        try { return Frame.GetLocalVariable(local.SlotIndex); }
                         catch { }
                     }
                 }
@@ -134,9 +136,9 @@ public class FuncEvalEvaluator
         // Look up parameter by name from metadata
         try
         {
-            var module = _frame.Function.Module;
+            var module = Frame.Function.Module;
             var import = module.GetMetaDataInterface<MetaDataImport>();
-            var methodToken = (mdMethodDef)_frame.Function.Token;
+            var methodToken = (mdMethodDef)Frame.Function.Token;
             var methodProps = import.GetMethodProps(methodToken);
             bool isStatic = methodProps.pdwAttr.HasFlag(CorMethodAttr.mdStatic);
             var enumHandle = IntPtr.Zero;
@@ -155,7 +157,7 @@ public class FuncEvalEvaluator
                                 ? props.pulSequence - 1
                                 : props.pulSequence;
                             if (enumHandle != IntPtr.Zero) import.CloseEnum(enumHandle);
-                            try { return _frame.GetArgument(paramArgIndex); }
+                            try { return Frame.GetArgument(paramArgIndex); }
                             catch { return null; }
                         }
                     }
@@ -172,7 +174,7 @@ public class FuncEvalEvaluator
 
         if (name.StartsWith("arg") && int.TryParse(name[3..], out var argIndex))
         {
-            try { return _frame.GetArgument(argIndex); }
+            try { return Frame.GetArgument(argIndex); }
             catch { return null; }
         }
 
@@ -260,19 +262,24 @@ public class FuncEvalEvaluator
         var raw = obj;
         obj = Dereference(obj);
 
+        CorDebugFunction? method = null;
+
         if (obj is CorDebugObjectValue objVal)
+            method = MetadataHelper.FindMethodByName(objVal, methodName, args.Length);
+
+        // Fallback for non-object values (e.g., CorDebugStringValue):
+        // use ICorDebugValue2.GetExactType to walk the type hierarchy.
+        method ??= MetadataHelper.FindMethodByExactType(obj, methodName, args.Length);
+
+        if (method != null)
         {
-            var method = MetadataHelper.FindMethodByName(objVal, methodName, args.Length);
-            if (method != null)
+            var allArgs = new CorDebugValue[args.Length + 1];
+            allArgs[0] = raw;
+            Array.Copy(args, 0, allArgs, 1, args.Length);
+            return await _evalExecutor.ExecuteEvalAsync(eval =>
             {
-                var allArgs = new CorDebugValue[args.Length + 1];
-                allArgs[0] = raw;
-                Array.Copy(args, 0, allArgs, 1, args.Length);
-                return await _evalExecutor.ExecuteEvalAsync(eval =>
-                {
-                    CallFunction(eval, method, allArgs);
-                }, _thread);
-            }
+                CallFunction(eval, method, allArgs);
+            }, _thread);
         }
 
         throw MakeError($"Method '{methodName}' not found");
