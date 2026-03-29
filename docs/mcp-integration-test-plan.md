@@ -55,6 +55,8 @@ Confirm that `dnd-debugger` appears with 20 tools listed.
 
 Each scenario issues instructions in the Claude Code chat and verifies MCP tool call results.
 
+**Important**: Scenarios 2.10 and 2.11 test the `not-started` state and must be run **first** after a fresh MCP server connection (restart Claude Code). Once any `launch` has been called, the state transitions to `exited` after termination, not back to `not-started`.
+
 ### 2.1 Basic: Process Launch and Termination
 
 **Purpose**: Verify launch / terminate / output file behavior
@@ -72,11 +74,11 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
 
 ### 2.2 Breakpoints + Stopping
 
-**Purpose**: Verify setBreakpoint -> launch -> stop -> display format
+**Purpose**: Verify setBreakpoint -> launch -> stop -> display format + removeBreakpoint
 
 **Steps**:
-1. `setBreakpoint` at BreakpointTest Program.cs:3
-   - Expected: `Breakpoint 1 set at ...Program.cs:3 (pending — will activate when code is loaded)`
+1. `setBreakpoint` at BreakpointTest Program.cs:7
+   - Expected: `Breakpoint 1 set at ...Program.cs:7 (pending — will activate when code is loaded)`
 2. `getBreakpoints` to check BP list
    - Expected: 1 entry with `(pending)` display
 3. `launch` BreakpointTest -> `continue`
@@ -84,17 +86,32 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
 4. `getStackTrace`
    - Expected: Stack frame shows module name `[BreakpointTest.dll]`
 5. `getVariables` should include `a`, `b`
+6. `removeBreakpoint` with breakpointId=1 (while stopped)
+   - Expected: `Breakpoint 1 removed`
+7. `getBreakpoints` to verify removal
+   - Expected: `No breakpoints set`
+
+**Note**: `removeBreakpoint` must be called while the debugger connection is active (before `terminate`). Calling it after `terminate` will return an error.
 
 ### 2.3 Stepping
 
 **Purpose**: Verify stepOver / stepIn / stepOut behavior
 
-**Steps**:
+**Steps (stepOver)**:
 1. Launch VariablesTest -> stops at Debugger.Break()
    - Expected: `Stopped: pause`
 2. Execute `stepOver` several times
    - Expected: Each time `Stopped: step` + line number advances
 3. Stack trace line numbers should be monotonically increasing
+4. `terminate` to exit
+
+**Steps (stepIn)**:
+5. `setBreakpoint` at BreakpointTest Program.cs:12 (`var result = Add(1, 2);`)
+6. `launch` BreakpointTest -> stops at breakpoint
+   - Expected: `Stopped: breakpoint #1` at Program.cs:12
+7. Execute `stepIn`
+   - Expected: `Stopped: step` at Program.Add (Program.cs:6 or :7) — entered the function
+8. `terminate` to exit
 
 ### 2.4 Variable Inspection
 
@@ -211,8 +228,10 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
 
 **Purpose**: Verify getState tool behavior
 
+**Prerequisite**: This scenario must be run **first** after a fresh MCP server connection to test the `not-started` state. Once any `launch` has been called, the state after `terminate` is `exited`, not `not-started`.
+
 **Steps**:
-1. Call `getState` before launch
+1. Call `getState` before any launch (fresh MCP server session)
    - Expected: `State: not-started`
 2. Launch VariablesTest -> stops at Debugger.Break()
 3. Call `getState`
@@ -231,8 +250,10 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
 
 **Purpose**: Verify waitForStop tool behavior across all states
 
+**Prerequisite**: Step 1 must be run **before any `launch`** in the MCP server session (fresh connection). After a process has exited, `waitForStop` returns exit info instead of an error.
+
 **Steps**:
-1. Call `waitForStop` before launch
+1. Call `waitForStop` before any launch (fresh MCP server session)
    - Expected: Error — `No process running. Call launch or attach first.`
 2. Launch VariablesTest -> stops at Debugger.Break()
 3. Call `waitForStop` (already stopped)
