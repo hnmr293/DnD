@@ -22,6 +22,8 @@ public class ValueReader
     private (string Value, string? Type, int VariablesReference) ReadCore(
         CorDebugValue value, VariableStore store, int depth)
     {
+        var originalValue = value;
+
         if (value is CorDebugReferenceValue refVal)
         {
             if (refVal.IsNull)
@@ -46,7 +48,7 @@ public class ValueReader
             var typeName = $"{GetElementTypeName(elementType)}[{count}]";
             if (depth < 2)
             {
-                var varRef = store.Store(value);
+                var varRef = store.Store(originalValue);
                 return (typeName, typeName, varRef);
             }
             return (typeName, typeName, 0);
@@ -66,7 +68,7 @@ public class ValueReader
             var className = GetClassName(objVal);
             if (depth < 2)
             {
-                var varRef = store.Store(value);
+                var varRef = store.Store(originalValue);
                 return ($"{{{className}}}", className, varRef);
             }
             return ($"{{{className}}}", className, 0);
@@ -110,12 +112,16 @@ public class ValueReader
         }
     }
 
-    public List<Variable> ExpandChildren(CorDebugValue value, VariableStore store)
+    public async Task<List<Variable>> ExpandChildrenAsync(
+        CorDebugValue value, VariableStore store,
+        IEvalExecutor? evalExecutor = null, CorDebugThread? thread = null)
     {
         var result = new List<Variable>();
 
         try
         {
+            var rawValue = value;
+
             if (value is CorDebugReferenceValue refVal)
             {
                 if (refVal.IsNull) return result;
@@ -148,6 +154,7 @@ public class ValueReader
                 var import = module.GetMetaDataInterface<MetaDataImport>();
                 var classToken = classType.Token;
 
+                var fieldNames = new HashSet<string>();
                 var fieldTokens = EnumFields(import, classToken);
                 foreach (var fieldToken in fieldTokens)
                 {
@@ -155,11 +162,33 @@ public class ValueReader
                     {
                         var fieldProps = import.GetFieldProps((mdFieldDef)fieldToken);
                         var fieldName = fieldProps.szField;
+                        fieldNames.Add(fieldName);
                         var fieldValue = objVal.GetFieldValue(classType.Raw, (mdFieldDef)fieldToken);
                         var (displayValue, type, varRef) = Read(fieldValue, store, 1);
                         result.Add(new Variable(fieldName, displayValue, varRef, type));
                     }
                     catch { }
+                }
+
+                if (evalExecutor != null && thread != null)
+                {
+                    var propertyGetters = MetadataHelper.EnumPropertyGetters(module, import, classToken);
+                    foreach (var (propertyName, getter) in propertyGetters)
+                    {
+                        if (fieldNames.Contains($"<{propertyName}>k__BackingField"))
+                            continue;
+
+                        try
+                        {
+                            var propValue = await evalExecutor.ExecuteEvalAsync(eval =>
+                            {
+                                FuncEvalEvaluator.CallFunction(eval, getter, [rawValue]);
+                            }, thread);
+                            var (displayValue, type, varRef) = Read(propValue, store, 1);
+                            result.Add(new Variable(propertyName, displayValue, varRef, type));
+                        }
+                        catch { }
+                    }
                 }
             }
         }

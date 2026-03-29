@@ -310,7 +310,7 @@ public class FuncEvalEvaluator
     /// Calls a function via ICorDebugEval, using CallParameterizedFunction when
     /// the target object is a generic type (e.g., List&lt;int&gt;.Count).
     /// </summary>
-    private static void CallFunction(CorDebugEval eval, CorDebugFunction function, CorDebugValue[] args)
+    internal static void CallFunction(CorDebugEval eval, CorDebugFunction function, CorDebugValue[] args)
     {
         var rawArgs = new ICorDebugValue[args.Length];
         for (int i = 0; i < args.Length; i++)
