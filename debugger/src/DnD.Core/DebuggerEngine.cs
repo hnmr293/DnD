@@ -381,7 +381,7 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         return Task.FromResult(new GetStackTraceResponse(frames.ToArray()));
     }
 
-    public Task<GetVariablesResponse> GetVariablesAsync(GetVariablesRequest request)
+    public async Task<GetVariablesResponse> GetVariablesAsync(GetVariablesRequest request)
     {
         _currentState.EnsureStopped();
         var session = RequireSession();
@@ -417,10 +417,11 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         {
             var parentValue = session.VariableStore.Get(request.VariablesReference);
             if (parentValue != null)
-                variables.AddRange(valueReader.ExpandChildren(parentValue, session.VariableStore));
+                variables.AddRange(await valueReader.ExpandChildrenAsync(
+                    parentValue, session.VariableStore, this, session.StoppedThread));
         }
 
-        return Task.FromResult(new GetVariablesResponse(variables.ToArray()));
+        return new GetVariablesResponse(variables.ToArray());
     }
 
     public async Task<EvaluateResponse> EvaluateAsync(EvaluateRequest request)
@@ -611,7 +612,15 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         session.EvalTcs = new TaskCompletionSource<(CorDebugEval, bool)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        setup(eval);
+        try
+        {
+            setup(eval);
+        }
+        catch
+        {
+            session.EvalTcs = null;
+            throw;
+        }
 
         // Transition: Stopped → Evaluating
         lock (_lock) { _currentState = _currentState.StartEval(this); }

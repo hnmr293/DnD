@@ -182,6 +182,54 @@ public static class MetadataHelper
         }
     }
 
+    /// <summary>
+    /// Enumerate all property getters (get_* methods with 0 parameters) on a class.
+    /// Returns (propertyName, getter function) pairs.
+    /// </summary>
+    public static List<(string PropertyName, CorDebugFunction Getter)> EnumPropertyGetters(
+        CorDebugModule module, MetaDataImport import, mdTypeDef classToken)
+    {
+        var result = new List<(string, CorDebugFunction)>();
+        var enumHandle = IntPtr.Zero;
+        var methodTokens = new mdMethodDef[64];
+
+        try
+        {
+            var count = import.EnumMethods(ref enumHandle, classToken, methodTokens);
+            while (count > 0)
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    try
+                    {
+                        var props = import.GetMethodProps(methodTokens[i]);
+                        if (props.szMethod.StartsWith("get_"))
+                        {
+                            var paramCount = CountMethodParams(import, methodTokens[i]);
+                            if (paramCount == 0)
+                            {
+                                var propertyName = props.szMethod[4..];
+                                var function = module.GetFunctionFromToken(methodTokens[i]);
+                                result.Add((propertyName, function));
+                            }
+                        }
+                    }
+                    catch { }
+                }
+                count = import.EnumMethods(ref enumHandle, classToken, methodTokens);
+            }
+
+            if (enumHandle != IntPtr.Zero)
+                import.CloseEnum(enumHandle);
+        }
+        catch
+        {
+            try { if (enumHandle != IntPtr.Zero) import.CloseEnum(enumHandle); } catch { }
+        }
+
+        return result;
+    }
+
     private static int CountMethodParams(MetaDataImport import, mdMethodDef methodToken)
     {
         var enumHandle = IntPtr.Zero;
