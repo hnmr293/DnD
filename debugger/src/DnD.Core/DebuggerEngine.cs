@@ -429,10 +429,13 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         _currentState.EnsureStopped();
         var session = RequireSession();
 
-        var frame = (request.FrameId.HasValue && session.FrameMap.TryGetValue(request.FrameId.Value, out var f)
-            ? f
-            : session.FrameMap.GetValueOrDefault(0)) ?? throw new LocalRpcException("No frame available for evaluation")
+        var frameId = request.FrameId ?? 0;
+        CorDebugILFrame GetCurrentFrame() =>
+            (session.FrameMap.TryGetValue(frameId, out var current) ? current : null)
+            ?? throw new LocalRpcException("No frame available for evaluation")
             { ErrorCode = ErrorCodes.EvaluationFailed };
+
+        var frame = GetCurrentFrame();
         var module = frame.Function.Module;
         var reader = GetSymbolReader(module, session);
         var exVal = GetCurrentExceptionValue(session);
@@ -454,7 +457,7 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
             var ast = ExpressionParser.Parse(request.Expression);
             var thread = session.StoppedThread ?? throw new LocalRpcException("No thread available for evaluation")
             { ErrorCode = ErrorCodes.EvaluationFailed };
-            var funcEval = new FuncEvalEvaluator(this, thread, frame, reader, session.VariableStore, exVal, session.LastReturnValue);
+            var funcEval = new FuncEvalEvaluator(this, thread, GetCurrentFrame, reader, session.VariableStore, exVal, session.LastReturnValue);
             return await funcEval.EvaluateAsync(ast);
         }
         catch (FormatException ex)
