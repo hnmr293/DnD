@@ -16,6 +16,10 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
     private readonly IProcessLauncher _launcher;
     private readonly object _lock = new();
 
+    // Module-load buffering for race between Launch() and _session assignment
+    private readonly object _moduleBufferLock = new();
+    private List<CorDebugModule>? _moduleBuffer;
+
     // Session-crossing state
     private readonly BreakpointManager _breakpointManager = new();
 
@@ -41,6 +45,9 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
     {
         var handler = new ManagedCallbackHandler();
         ApplyExceptionBreakpointSettings(handler);
+
+        lock (_moduleBufferLock) { _moduleBuffer = new List<CorDebugModule>(); }
+
         WireCallbackEvents(handler);
 
         var result = _launcher.Launch(
@@ -52,7 +59,17 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
             StopAtEntry = request.StopAtEntry,
             ProgramPath = Path.GetFullPath(request.Program)
         };
-        _session = session;
+        Volatile.Write(ref _session, session);
+
+        // Replay buffered module loads, then switch to direct mode
+        List<CorDebugModule> buffered;
+        lock (_moduleBufferLock)
+        {
+            buffered = _moduleBuffer ?? new();
+            _moduleBuffer = null;
+        }
+        foreach (var module in buffered)
+            HandleModuleLoaded(session, module, handler);
 
         if (result.StandardOutput != null)
             StartOutputReader(result.StandardOutput, OutputCategory.Stdout);
@@ -66,12 +83,26 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
     {
         var handler = new ManagedCallbackHandler();
         ApplyExceptionBreakpointSettings(handler);
+
+        lock (_moduleBufferLock) { _moduleBuffer = new List<CorDebugModule>(); }
+
         WireCallbackEvents(handler);
 
         var result = _launcher.Attach(request.ProcessId, handler.Callback);
 
         var session = new DebugSession(result.CorDebug, result.Process, handler);
-        _session = session;
+        Volatile.Write(ref _session, session);
+
+        // Replay buffered module loads, then switch to direct mode
+        List<CorDebugModule> buffered;
+        lock (_moduleBufferLock)
+        {
+            buffered = _moduleBuffer ?? new();
+            _moduleBuffer = null;
+        }
+        foreach (var module in buffered)
+            HandleModuleLoaded(session, module, handler);
+
         return session;
     }
 
@@ -81,7 +112,7 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
     void ISessionContext.EndSession()
     {
         var session = _session;
-        _session = null;
+        Volatile.Write(ref _session, null);
         if (session != null)
         {
             _breakpointManager.RevertAllToPending();
@@ -707,8 +738,18 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
     {
         handler.OnStopped += (thread, reason, description) =>
         {
-            var session = _session;
-            if (session == null) return;
+            var session = Volatile.Read(ref _session);
+            if (session == null)
+            {
+                // Wait for _session assignment (Launch() return → assignment window, typically microseconds)
+                var sw = new SpinWait();
+                for (int i = 0; i < 200 && session == null; i++)
+                {
+                    sw.SpinOnce();
+                    session = Volatile.Read(ref _session);
+                }
+                if (session == null) return;
+            }
 
             // Quick hit-count check before full state setup
             if (reason == StopReason.Breakpoint && handler.LastHitBreakpoint != null)
@@ -790,29 +831,18 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
 
         handler.OnModuleLoaded += (module) =>
         {
-            var session = _session;
-            if (session == null) return;
-
-            var moduleName = module.Name;
-            if (string.IsNullOrEmpty(moduleName)) return;
-
-            var reader = Symbols.SymbolReaderFactory.Create(moduleName);
-            session.Modules[moduleName] = (module, reader);
-            _breakpointManager.OnModuleLoaded(moduleName, module, reader);
-
-            // Handle stopAtEntry: set entry breakpoint when the target module loads
-            if (session.StopAtEntry && handler.EntryBreakpoint == null && session.ProgramPath != null)
+            lock (_moduleBufferLock)
             {
-                try
+                if (_moduleBuffer != null)
                 {
-                    var normalizedModule = Path.GetFullPath(moduleName);
-                    if (string.Equals(normalizedModule, session.ProgramPath, StringComparison.OrdinalIgnoreCase))
-                    {
-                        SetEntryPointBreakpoint(module, handler);
-                    }
+                    _moduleBuffer.Add(module);
+                    return;
                 }
-                catch { }
             }
+            // Buffer disabled = _session is set
+            var session = Volatile.Read(ref _session);
+            if (session == null) return;
+            HandleModuleLoaded(session, module, handler);
         };
 
         handler.OnEvalCompleted += (thread, eval, success) =>
@@ -825,6 +855,30 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
     }
 
     // ── Private helpers ────────────────────────────────────────────────
+
+    private void HandleModuleLoaded(DebugSession session, CorDebugModule module, ManagedCallbackHandler handler)
+    {
+        var moduleName = module.Name;
+        if (string.IsNullOrEmpty(moduleName)) return;
+
+        var reader = Symbols.SymbolReaderFactory.Create(moduleName);
+        session.Modules[moduleName] = (module, reader);
+        _breakpointManager.OnModuleLoaded(moduleName, module, reader);
+
+        // Handle stopAtEntry: set entry breakpoint when the target module loads
+        if (session.StopAtEntry && handler.EntryBreakpoint == null && session.ProgramPath != null)
+        {
+            try
+            {
+                var normalizedModule = Path.GetFullPath(moduleName);
+                if (string.Equals(normalizedModule, session.ProgramPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    SetEntryPointBreakpoint(module, handler);
+                }
+            }
+            catch { }
+        }
+    }
 
     private DebugSession RequireSession()
         => _session ?? throw new InvalidOperationException("No active debug session");
