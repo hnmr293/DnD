@@ -28,8 +28,7 @@ class Program
 
 /// <summary>
 /// Custom exception that extends Exception directly (not System.ArgumentException).
-/// Simulates third-party exceptions like Autodesk.Revit.Exceptions.ArgumentException
-/// that define their own ParamName property with a different inheritance chain.
+/// Simulates third-party exceptions that define their own ParamName property with a different inheritance chain.
 /// </summary>
 class CustomArgumentException : Exception
 {

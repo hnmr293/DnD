@@ -113,6 +113,14 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
    - Expected: `Stopped: step` at Program.Add (Program.cs:6 or :7) — entered the function
 8. `terminate` to exit
 
+**Steps (stepOut)**:
+9. `setBreakpoint` at BreakpointTest Program.cs:7 (inside `Add` method)
+10. `launch` BreakpointTest -> stops at breakpoint
+    - Expected: `Stopped: breakpoint #1` at Program.cs:7 (inside Add)
+11. Execute `stepOut`
+    - Expected: `Stopped: step` at Program.Main — returned to caller (Program.cs:12 or :13)
+12. `terminate` to exit
+
 ### 2.4 Variable Inspection
 
 **Purpose**: Verify getVariables expands local variables + empty scope message
@@ -289,9 +297,13 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
 **Steps**:
 1. Launch VariablesTest -> stops at Debugger.Break()
 2. `getState` to check output file path
-3. `continue` to let process exit
-4. Read the output file using the Read tool
-   - Expected: Contains `42 hello 3.14 true` (Console.WriteLine output from VariablesTest)
+3. `stepOver` twice to execute past Console.WriteLine (line 16)
+4. Read the output file using the Read tool (while still stopped)
+   - Expected: Contains `42 hello 3.14 True 42` (Console.WriteLine output from VariablesTest)
+   - This verifies FILE_SHARE_READ — the file is readable while the debugger host still holds it open
+5. `continue` to let process exit
+6. Read the output file again after exit
+   - Expected: Same content as step 4
 
 **Verification Points**:
 - Output file path is included in the launch response

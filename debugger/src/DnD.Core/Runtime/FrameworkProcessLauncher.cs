@@ -1,5 +1,7 @@
 namespace DnD.Core.Runtime;
 
+using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using ClrDebug;
 
 public class FrameworkProcessLauncher : IProcessLauncher
@@ -14,23 +16,52 @@ public class FrameworkProcessLauncher : IProcessLauncher
 
         var commandLine = BuildCommandLine(program, args);
 
-        var startupInfo = new STARTUPINFOW();
-        var processInfo = new PROCESS_INFORMATION();
+        var stdoutPipe = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.Inheritable);
+        var stderrPipe = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.Inheritable);
 
-        var process = corDebug.CreateProcess(
-            lpApplicationName: null,
-            lpCommandLine: commandLine,
-            lpProcessAttributes: default,
-            lpThreadAttributes: default,
-            bInheritHandles: false,
-            dwCreationFlags: CreateProcessFlags.CREATE_NO_WINDOW,
-            lpEnvironment: IntPtr.Zero,
-            lpCurrentDirectory: cwd,
-            lpStartupInfo: startupInfo,
-            lpProcessInformation: ref processInfo,
-            debuggingFlags: CorDebugCreateProcessFlags.DEBUG_NO_SPECIAL_OPTIONS);
+        // NUL for stdin — mark inheritable so the child can use it
+        using var nulFile = File.OpenHandle("NUL", FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        var nulHandle = nulFile.DangerousGetHandle();
+        SetHandleInformation(nulHandle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
 
-        return new LaunchResult(corDebug, process);
+        try
+        {
+            var startupInfo = new STARTUPINFOW();
+            startupInfo.cb = Marshal.SizeOf<STARTUPINFOW>();
+            startupInfo.dwFlags = STARTF.STARTF_USESTDHANDLES;
+            startupInfo.hStdInput = nulHandle;
+            startupInfo.hStdOutput = stdoutPipe.ClientSafePipeHandle.DangerousGetHandle();
+            startupInfo.hStdError = stderrPipe.ClientSafePipeHandle.DangerousGetHandle();
+            var processInfo = new PROCESS_INFORMATION();
+
+            var process = corDebug.CreateProcess(
+                lpApplicationName: null,
+                lpCommandLine: commandLine,
+                lpProcessAttributes: default,
+                lpThreadAttributes: default,
+                bInheritHandles: true,
+                dwCreationFlags: CreateProcessFlags.CREATE_NO_WINDOW,
+                lpEnvironment: IntPtr.Zero,
+                lpCurrentDirectory: cwd,
+                lpStartupInfo: startupInfo,
+                lpProcessInformation: ref processInfo,
+                debuggingFlags: CorDebugCreateProcessFlags.DEBUG_NO_SPECIAL_OPTIONS);
+
+            return new LaunchResult(corDebug, process, stdoutPipe, stderrPipe);
+        }
+        catch
+        {
+            stdoutPipe.Dispose();
+            stderrPipe.Dispose();
+            throw;
+        }
+        finally
+        {
+            // Close the write-end handles in our process — only the child holds them now.
+            // This ensures ReadLine() on the server end will return null when the child exits.
+            stdoutPipe.DisposeLocalCopyOfClientHandle();
+            stderrPipe.DisposeLocalCopyOfClientHandle();
+        }
     }
 
     public LaunchResult Attach(
@@ -60,6 +91,11 @@ public class FrameworkProcessLauncher : IProcessLauncher
         corDebug.Initialize();
         return corDebug;
     }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetHandleInformation(IntPtr hObject, int dwMask, int dwFlags);
+
+    private const int HANDLE_FLAG_INHERIT = 0x00000001;
 
     private static string BuildCommandLine(string program, string[]? args)
     {
