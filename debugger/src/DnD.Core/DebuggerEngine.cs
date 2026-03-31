@@ -111,8 +111,7 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
 
     void ISessionContext.EndSession()
     {
-        var session = _session;
-        Volatile.Write(ref _session, null);
+        var session = Interlocked.Exchange(ref _session, null);
         if (session != null)
         {
             _breakpointManager.RevertAllToPending();
@@ -133,6 +132,17 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
                     process.Stop(3000);
                     process.Terminate(0);
                 }).WaitAsync(TimeSpan.FromSeconds(5));
+
+                // Wait for the debuggee process to actually exit.
+                // ICorDebug contract: do not call ICorDebug::Terminate
+                // before all debugged processes have exited.
+                try
+                {
+                    using var osProcess = Process.GetProcessById(process.Id);
+                    await osProcess.WaitForExitAsync()
+                        .WaitAsync(TimeSpan.FromSeconds(5));
+                }
+                catch (ArgumentException) { } // already exited
             }
             catch { }
         }
@@ -1285,18 +1295,21 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
 
     public void Dispose()
     {
+        var session = Interlocked.Exchange(ref _session, null);
+        if (session == null)
+            return;
+
         try
         {
             var stateId = _currentState.Id;
             if (stateId != DebuggerState.Terminated && stateId != DebuggerState.NotStarted)
             {
-                _session?.Process.Stop(1000);
-                _session?.Process.Terminate(0);
+                session.Process.Stop(1000);
+                session.Process.Terminate(0);
             }
         }
         catch { }
 
-        _session?.Dispose();
-        _session = null;
+        session.Dispose();
     }
 }
