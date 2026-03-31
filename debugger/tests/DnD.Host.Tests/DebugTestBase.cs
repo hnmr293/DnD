@@ -76,8 +76,17 @@ public abstract class DebugTestBase : IAsyncLifetime
         Rpc?.Dispose();
         if (_hostProcess is { HasExited: false })
         {
-            _hostProcess.Kill();
-            await _hostProcess.WaitForExitAsync();
+            // Wait for graceful exit (COM cleanup) before resorting to kill
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await _hostProcess.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                _hostProcess.Kill();
+                await _hostProcess.WaitForExitAsync();
+            }
         }
         _hostProcess?.Dispose();
         StoppedQueue.Dispose();
