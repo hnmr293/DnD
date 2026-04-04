@@ -12,7 +12,7 @@ const HOST_PATH =
   process.env.DND_HOST_PATH ??
   resolve(
     __dirname,
-    "../../debugger/src/DnD.Host/bin/Debug/net8.0-windows/DnD.Host.dll",
+    "../../debugger/src/DnD.Host/bin/Debug/net8.0/DnD.Host.dll",
   );
 
 /**
