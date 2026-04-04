@@ -33,6 +33,14 @@ public class FuncEvalEvaluator
 
     private CorDebugILFrame Frame => _frameAccessor();
 
+    /// <summary>
+    /// Returns the module path of the stopped frame for optimization detection (Issue #18).
+    /// </summary>
+    private string? StoppedModulePath
+    {
+        get { try { return Frame.Function.Module.Name; } catch { return null; } }
+    }
+
     public FuncEvalEvaluator(
         IEvalExecutor evalExecutor,
         CorDebugThread thread,
@@ -246,9 +254,10 @@ public class FuncEvalEvaluator
             var getter = MetadataHelper.FindPropertyGetter(objVal, memberName);
             if (getter != null)
             {
+                var modulePath = StoppedModulePath;
                 return await _evalExecutor.ExecuteEvalAsync(eval =>
                 {
-                    CallFunction(eval, getter, [raw]);
+                    CallFunction(eval, getter, [raw], modulePath);
                 }, _thread);
             }
         }
@@ -276,9 +285,10 @@ public class FuncEvalEvaluator
             var allArgs = new CorDebugValue[args.Length + 1];
             allArgs[0] = raw;
             Array.Copy(args, 0, allArgs, 1, args.Length);
+            var modulePath = StoppedModulePath;
             return await _evalExecutor.ExecuteEvalAsync(eval =>
             {
-                CallFunction(eval, method, allArgs);
+                CallFunction(eval, method, allArgs, modulePath);
             }, _thread);
         }
 
@@ -303,9 +313,10 @@ public class FuncEvalEvaluator
             var getItem = MetadataHelper.FindMethodByName(objVal, "get_Item", 1);
             if (getItem != null)
             {
+                var modulePath = StoppedModulePath;
                 return await _evalExecutor.ExecuteEvalAsync(eval =>
                 {
-                    CallFunction(eval, getItem, [raw, index]);
+                    CallFunction(eval, getItem, [raw, index], modulePath);
                 }, _thread);
             }
         }
@@ -317,7 +328,13 @@ public class FuncEvalEvaluator
     /// Calls a function via ICorDebugEval, using CallParameterizedFunction when
     /// the target object is a generic type (e.g., List&lt;int&gt;.Count).
     /// </summary>
-    internal static void CallFunction(CorDebugEval eval, CorDebugFunction function, CorDebugValue[] args)
+    /// <param name="stoppedModulePath">
+    /// Path of the module where the debuggee is currently stopped. Used to detect
+    /// optimized code before calling CallParameterizedFunction (Issue #18).
+    /// </param>
+    internal static void CallFunction(
+        CorDebugEval eval, CorDebugFunction function, CorDebugValue[] args,
+        string? stoppedModulePath = null)
     {
         var rawArgs = new ICorDebugValue[args.Length];
         for (int i = 0; i < args.Length; i++)
@@ -336,6 +353,16 @@ public class FuncEvalEvaluator
 
         if (typeArgs != null && typeArgs.Length > 0)
         {
+            // CallParameterizedFunction does NOT throw CORDBG_E_ILLEGAL_IN_OPTIMIZED_CODE
+            // on optimized (Release) builds, unlike CallFunction. If we proceed,
+            // process.Continue() resumes normal execution instead of eval, killing the
+            // debuggee. Pre-check the stopped frame's module and throw the same error
+            // that CallFunction would. (Issue #18)
+            if (stoppedModulePath != null && DebuggerEngine.IsModuleOptimized(stoppedModulePath))
+                throw new System.Runtime.InteropServices.COMException(
+                    "Error HRESULT CORDBG_E_ILLEGAL_IN_OPTIMIZED_CODE has been returned from a call to a COM component.",
+                    unchecked((int)0x80131C45));
+
             // Generic type — use CallParameterizedFunction
             ((ICorDebugEval2)eval.Raw).CallParameterizedFunction(
                 function.Raw, typeArgs.Length, typeArgs, rawArgs.Length, rawArgs);
