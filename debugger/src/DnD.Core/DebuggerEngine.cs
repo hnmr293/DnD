@@ -706,6 +706,8 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
             // Phase 4: Give up — force-fail the TCS so we don't hang
             session.EvalTcs.TrySetException(new TimeoutException(
                 $"Func-eval could not be aborted after {actualTimeout.TotalSeconds}s"));
+            // Recover: Evaluating → Stopped (no callback will fire)
+            lock (_lock) { _currentState = _currentState.OnEvalComplete(this); }
             throw new LocalRpcException(
                 $"Func-eval timed out and could not be aborted")
             { ErrorCode = ErrorCodes.EvaluationFailed };
@@ -837,7 +839,7 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
 
         handler.OnProcessExited += (exitCode) =>
         {
-            _currentState = _currentState.OnProcessExited(this, exitCode);
+            lock (_lock) { _currentState = _currentState.OnProcessExited(this, exitCode); }
         };
 
         handler.OnModuleLoaded += (module) =>
@@ -906,7 +908,7 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
     /// the DebuggableAttribute from PE metadata.
     /// Returns true if the module is optimized (DisableOptimizations flag is NOT set).
     /// </summary>
-    private static bool IsModuleOptimized(string modulePath)
+    internal static bool IsModuleOptimized(string modulePath)
     {
         try
         {
