@@ -24,6 +24,15 @@
     "csharp",
     "model-context-protocol"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hnmr293/DnD.git",
+    "directory": "mcp"
+  },
+  "homepage": "https://github.com/hnmr293/DnD#readme",
+  "bugs": {
+    "url": "https://github.com/hnmr293/DnD/issues"
+  },
   "license": "Apache-2.0",
   "scripts": {
     "build": "tsc",
