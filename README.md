@@ -15,20 +15,12 @@ LLM → MCP (stdio) → TypeScript MCP Server → JSON-RPC (stdio) → C# Debugg
 ### Prerequisites
 
 - Node.js >= 18
-- .NET 8 SDK or later
+- .NET 8 runtime or later
 
 ### Install
 
 ```bash
-# Install C# debugger engine
-dotnet tool install -g DnD.Host
-
-# Install MCP server (not yet published to npm)
-git clone https://github.com/hnmr293/DnD.git
-cd DnD/mcp
-npm install
-npm run build
-npm link
+npm install -g dnd-mcp
 ```
 
 ### Configure MCP
@@ -40,14 +32,11 @@ Add to your `.mcp.json`:
   "mcpServers": {
     "dnd": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["dnd-mcp"]
+      "command": "dnd-mcp"
     }
   }
 }
 ```
-
-The MCP server auto-detects `dnd-host` installed via `dotnet tool install`. You can override the host path by setting the `DND_HOST_PATH` environment variable in the MCP config.
 
 ## MCP Tools
 
