@@ -32,7 +32,8 @@ Add to your `.mcp.json`:
   "mcpServers": {
     "dnd": {
       "type": "stdio",
-      "command": "dnd-mcp"
+      "command": "npx",
+      "args": ["-y", "dnd-mcp"]
     }
   }
 }

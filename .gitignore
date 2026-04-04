@@ -2,3 +2,8 @@
 /.vscode
 
 /.claude/**/*.local.json
+
+# npm (root-level local install for testing)
+/node_modules/
+/package.json
+/package-lock.json
