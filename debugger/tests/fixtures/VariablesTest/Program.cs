@@ -14,6 +14,7 @@ class Program
         var computed = new ComputedOnly();
         Debugger.Break(); // stops here
         Console.WriteLine($"{x} {name} {pi} {flag} {computed.Value}");
+        x = 0; // keep process alive after Console.WriteLine for FILE_SHARE_READ verification
     }
 }
 

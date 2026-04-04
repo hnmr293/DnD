@@ -290,6 +290,9 @@ public sealed class StoppedState : DebuggerStateBase
     public override IDebuggerState StartEval(ISessionContext ctx)
         => EvaluatingState.Instance;
 
+    public override IDebuggerState OnEvalComplete(ISessionContext ctx)
+        => this; // Late eval callback after timeout recovery — ignore
+
     public override void EnsureStopped() { } // OK — we are stopped
 }
 
@@ -345,6 +348,9 @@ public sealed class TerminatedState : DebuggerStateBase
         ctx.RaiseExitedEvent(0);
         return Task.FromResult<IDebuggerState>(this);
     }
+
+    public override IDebuggerState OnEvalComplete(ISessionContext ctx)
+        => this; // Late eval callback after process exit — ignore
 
     public override void EnsureNotTerminated()
         => throw new LocalRpcException("Process has terminated") { ErrorCode = ErrorCodes.NotAttached };
