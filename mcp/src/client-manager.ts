@@ -1,5 +1,5 @@
 import { resolve, dirname, join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import {
   createWriteStream,
   existsSync,
@@ -23,8 +23,13 @@ function resolveHostPath(): string {
   if (existsSync(bundledPath)) {
     return bundledPath;
   }
+  // 3. dotnet global tool
+  const toolPath = join(homedir(), ".dotnet", "tools", "dnd-host.exe");
+  if (existsSync(toolPath)) {
+    return toolPath;
+  }
   throw new Error(
-    "DnD.Host.dll not found. Set DND_HOST_PATH environment variable or install the package with bundled binaries.",
+    "DnD.Host not found. Install with: dotnet tool install -g DnD.Host, or set DND_HOST_PATH environment variable.",
   );
 }
 

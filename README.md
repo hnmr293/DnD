@@ -15,17 +15,12 @@ LLM → MCP (stdio) → TypeScript MCP Server → JSON-RPC (stdio) → C# Debugg
 ### Prerequisites
 
 - Node.js >= 18
-- .NET 8 SDK (for building from source)
+- .NET 8 runtime or later
 
 ### Install
 
 ```bash
-# Not yet published to npm registry
-# npm install -g dnd-mcp
-git clone https://github.com/hnmr293/DnD.git
-cd DnD
-npm run build:all
-npm link
+npm install -g dnd-mcp
 ```
 
 ### Configure MCP
@@ -38,7 +33,7 @@ Add to your `.mcp.json`:
     "dnd": {
       "type": "stdio",
       "command": "npx",
-      "args": ["dnd-mcp"]
+      "args": ["-y", "dnd-mcp"]
     }
   }
 }
@@ -114,7 +109,7 @@ Set `DND_HOST_PATH` to point to your local C# debugger build:
       "command": "node",
       "args": ["<path-to-repo>/mcp/dist/index.js"],
       "env": {
-        "DND_HOST_PATH": "<path-to-repo>/debugger/src/DnD.Host/bin/Debug/net8.0-windows/DnD.Host.dll"
+        "DND_HOST_PATH": "<path-to-repo>/debugger/src/DnD.Host/bin/Debug/net8.0/DnD.Host.dll"
       }
     }
   }

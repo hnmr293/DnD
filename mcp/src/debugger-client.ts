@@ -73,13 +73,15 @@ export class DebuggerClient extends EventEmitter<DebuggerClientEvents> {
   }
 
   async start(): Promise<void> {
-    this.process = spawn(
-      "dotnet",
-      [this.hostPath, ...this.hostArgs, "--parentPid", process.pid.toString()],
-      {
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
+    const isDll = this.hostPath.endsWith(".dll");
+    const command = isDll ? "dotnet" : this.hostPath;
+    const args = isDll
+      ? [this.hostPath, ...this.hostArgs, "--parentPid", process.pid.toString()]
+      : [...this.hostArgs, "--parentPid", process.pid.toString()];
+
+    this.process = spawn(command, args, {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
 
     this.process.stderr?.on("data", (data: Buffer) => {
       // DnD.Host writes diagnostic messages to stderr
