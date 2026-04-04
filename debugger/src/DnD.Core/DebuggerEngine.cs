@@ -1,6 +1,7 @@
 namespace DnD.Core;
 
 using System.Diagnostics;
+using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using ClrDebug;
 using DnD.Core.Callbacks;
@@ -875,6 +876,16 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         session.Modules[moduleName] = (module, reader);
         _breakpointManager.OnModuleLoaded(moduleName, module, reader);
 
+        // Warn if the module has symbols but was built with optimizations enabled
+        if (reader != null && IsModuleOptimized(moduleName))
+        {
+            var fileName = Path.GetFileName(moduleName);
+            Output?.Invoke(this, new OutputEventArgs(
+                new OutputNotification(OutputCategory.Console,
+                    $"Warning: Module '{fileName}' is optimized (Release build). " +
+                    "Some local variables may be unavailable and expression evaluation may fail.")));
+        }
+
         // Handle stopAtEntry: set entry breakpoint when the target module loads
         if (session.StopAtEntry && handler.EntryBreakpoint == null && session.ProgramPath != null)
         {
@@ -887,6 +898,55 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
                 }
             }
             catch { }
+        }
+    }
+
+    /// <summary>
+    /// Checks whether an assembly was compiled with optimizations enabled by reading
+    /// the DebuggableAttribute from PE metadata.
+    /// Returns true if the module is optimized (DisableOptimizations flag is NOT set).
+    /// </summary>
+    private static bool IsModuleOptimized(string modulePath)
+    {
+        try
+        {
+            using var stream = File.OpenRead(modulePath);
+            using var peReader = new PEReader(stream);
+            if (!peReader.HasMetadata) return false;
+
+            var metadata = peReader.GetMetadataReader();
+            var assembly = metadata.GetAssemblyDefinition();
+
+            foreach (var attrHandle in assembly.GetCustomAttributes())
+            {
+                var attr = metadata.GetCustomAttribute(attrHandle);
+                if (attr.Constructor.Kind != HandleKind.MemberReference) continue;
+
+                var memberRef = metadata.GetMemberReference((MemberReferenceHandle)attr.Constructor);
+                if (memberRef.Parent.Kind != HandleKind.TypeReference) continue;
+
+                var typeRef = metadata.GetTypeReference((TypeReferenceHandle)memberRef.Parent);
+                if (metadata.GetString(typeRef.Name) != "DebuggableAttribute" ||
+                    metadata.GetString(typeRef.Namespace) != "System.Diagnostics")
+                    continue;
+
+                // Parse custom attribute blob: prolog (2 bytes) + DebuggingModes enum (4 bytes)
+                var blob = metadata.GetBlobReader(attr.Value);
+                if (blob.Length < 6) return true;
+                blob.ReadUInt16(); // prolog 0x0001
+                var modes = blob.ReadInt32();
+
+                // DebuggingModes.DisableOptimizations = 0x100
+                return (modes & 0x100) == 0;
+            }
+
+            // No DebuggableAttribute → treat as optimized
+            return true;
+        }
+        catch
+        {
+            // Can't read metadata → don't warn
+            return false;
         }
     }
 
