@@ -9,11 +9,27 @@
     <PackageReference Include="StreamJsonRpc" Version="2.24.84" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+
+    <!-- NuGet dotnet tool packaging -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>dnd-host</ToolCommandName>
+    <PackageId>DnD.Host</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>hnmr293</Authors>
+    <Description>.NET debugger engine host for MCP (Model Context Protocol). Provides a JSON-RPC stdio server that enables LLMs to debug C# programs via ICorDebug COM API. Windows only.</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/hnmr293/DnD</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/hnmr293/DnD</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
 </Project>
