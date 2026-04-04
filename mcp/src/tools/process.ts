@@ -1,11 +1,36 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { ClientManager } from "../client-manager.js";
+import type { DebuggerClient } from "../debugger-client.js";
+import type { OutputParams } from "../types/protocol.js";
 import {
   waitForStopOrExit,
   formatStoppedResponse,
   formatExitedResponse,
 } from "./execution.js";
+
+/** Collect console-category output events (e.g. optimization warnings) from the client. */
+function collectConsoleOutput(client: DebuggerClient): {
+  getWarnings: () => string[];
+  dispose: () => void;
+} {
+  const warnings: string[] = [];
+  const onOutput = (params: OutputParams) => {
+    if (params.category === "console") {
+      warnings.push(params.output);
+    }
+  };
+  client.on("output", onOutput);
+  return {
+    getWarnings: () => warnings,
+    dispose: () => client.removeListener("output", onOutput),
+  };
+}
+
+function formatWarnings(warnings: string[]): string {
+  if (warnings.length === 0) return "";
+  return "\n" + warnings.join("\n");
+}
 
 export function registerProcessTools(
   server: McpServer,
@@ -28,11 +53,14 @@ export function registerProcessTools(
     },
     async (params) => {
       const client = await clientManager.ensureClient();
+      const collector = collectConsoleOutput(client);
       const waitPromise = waitForStopOrExit(client);
       const result = await client.launch(params);
       clientManager.markRunning();
       const event = await waitPromise;
+      collector.dispose();
 
+      const warnings = formatWarnings(collector.getWarnings());
       const hostPidLine = clientManager.hostPid
         ? `\nDebugger host PID: ${clientManager.hostPid}`
         : "";
@@ -52,7 +80,8 @@ export function registerProcessTools(
               text:
                 formatStoppedResponse(event.params, topFrame) +
                 hostPidLine +
-                outputLine,
+                outputLine +
+                warnings,
             },
           ],
         };
@@ -60,7 +89,7 @@ export function registerProcessTools(
 
       // Process ran to completion without stopping
       const exitText =
-        formatExitedResponse(event.params) + hostPidLine + outputLine;
+        formatExitedResponse(event.params) + hostPidLine + outputLine + warnings;
       await clientManager.dispose();
       return {
         content: [{ type: "text" as const, text: exitText }],
@@ -76,8 +105,15 @@ export function registerProcessTools(
     },
     async (params) => {
       const client = await clientManager.ensureClient();
+      const collector = collectConsoleOutput(client);
       const result = await client.attach(params);
       clientManager.markRunning();
+
+      // Give module-load notifications a moment to arrive
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      collector.dispose();
+
+      const warnings = formatWarnings(collector.getWarnings());
       const hostPidLine = clientManager.hostPid
         ? `\nDebugger host PID: ${clientManager.hostPid}`
         : "";
@@ -88,7 +124,7 @@ export function registerProcessTools(
         content: [
           {
             type: "text" as const,
-            text: `Attached to process ${result.processId}${hostPidLine}${outputLine}`,
+            text: `Attached to process ${result.processId}${hostPidLine}${outputLine}${warnings}`,
           },
         ],
       };
