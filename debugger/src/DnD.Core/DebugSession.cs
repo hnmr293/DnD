@@ -2,7 +2,6 @@ namespace DnD.Core;
 
 using ClrDebug;
 using DnD.Core.Callbacks;
-using DnD.Core.Inspection;
 
 /// <summary>
 /// Encapsulates all resources and state that belong to a single debug session.
@@ -23,7 +22,6 @@ public class DebugSession : IDisposable
     public CorDebugThread? StoppedThread { get; internal set; }
     public Dictionary<int, CorDebugILFrame> FrameMap { get; } = new();
     public int NextFrameId { get; set; }
-    public VariableStore VariableStore { get; } = new();
     public CorDebugValue? LastReturnValue { get; set; }
     public bool SuppressNextStepCallback { get; set; }
 
@@ -47,14 +45,12 @@ public class DebugSession : IDisposable
     public void SetStopState(CorDebugThread? thread)
     {
         StoppedThread = thread;
-        VariableStore.Clear();
         FrameMap.Clear();
         NextFrameId = 0;
     }
 
     public void ClearStopState()
     {
-        VariableStore.Clear();
         FrameMap.Clear();
         NextFrameId = 0;
         LastReturnValue = null;

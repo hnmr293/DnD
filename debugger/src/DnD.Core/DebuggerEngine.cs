@@ -17,9 +17,11 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
     private readonly IProcessLauncher _launcher;
     private readonly object _lock = new();
 
-    // Module-load buffering for race between Launch() and _session assignment
+    // Module-load buffering for race between Launch() and _session assignment.
+    // Stores (Module, Name, Reader) so that pending breakpoints can be applied
+    // immediately during buffering, before ContinueProcess() resumes the debuggee.
     private readonly object _moduleBufferLock = new();
-    private List<CorDebugModule>? _moduleBuffer;
+    private List<(CorDebugModule Module, string Name, Symbols.ISymbolReader? Reader)>? _moduleBuffer;
 
     // Session-crossing state
     private readonly BreakpointManager _breakpointManager = new();
@@ -47,7 +49,7 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         var handler = new ManagedCallbackHandler();
         ApplyExceptionBreakpointSettings(handler);
 
-        lock (_moduleBufferLock) { _moduleBuffer = new List<CorDebugModule>(); }
+        lock (_moduleBufferLock) { _moduleBuffer = new(); }
 
         WireCallbackEvents(handler);
 
@@ -62,15 +64,17 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         };
         Volatile.Write(ref _session, session);
 
-        // Replay buffered module loads, then switch to direct mode
-        List<CorDebugModule> buffered;
+        // Replay buffered module loads, then switch to direct mode.
+        // Breakpoints were already applied during buffering; replay only
+        // registers modules with the session (symbols, optimization warnings, entry BP).
+        List<(CorDebugModule Module, string Name, Symbols.ISymbolReader? Reader)> buffered;
         lock (_moduleBufferLock)
         {
             buffered = _moduleBuffer ?? new();
             _moduleBuffer = null;
         }
-        foreach (var module in buffered)
-            HandleModuleLoaded(session, module, handler);
+        foreach (var (module, name, reader) in buffered)
+            RegisterModule(session, module, name, reader, handler);
 
         if (result.StandardOutput != null)
             StartOutputReader(result.StandardOutput, OutputCategory.Stdout);
@@ -85,7 +89,7 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         var handler = new ManagedCallbackHandler();
         ApplyExceptionBreakpointSettings(handler);
 
-        lock (_moduleBufferLock) { _moduleBuffer = new List<CorDebugModule>(); }
+        lock (_moduleBufferLock) { _moduleBuffer = new(); }
 
         WireCallbackEvents(handler);
 
@@ -94,15 +98,15 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         var session = new DebugSession(result.CorDebug, result.Process, handler);
         Volatile.Write(ref _session, session);
 
-        // Replay buffered module loads, then switch to direct mode
-        List<CorDebugModule> buffered;
+        // Replay buffered module loads (breakpoints already applied during buffering)
+        List<(CorDebugModule Module, string Name, Symbols.ISymbolReader? Reader)> buffered;
         lock (_moduleBufferLock)
         {
             buffered = _moduleBuffer ?? new();
             _moduleBuffer = null;
         }
-        foreach (var module in buffered)
-            HandleModuleLoaded(session, module, handler);
+        foreach (var (module, name, reader) in buffered)
+            RegisterModule(session, module, name, reader, handler);
 
         return session;
     }
@@ -423,47 +427,37 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         return Task.FromResult(new GetStackTraceResponse(frames.ToArray()));
     }
 
-    public async Task<GetVariablesResponse> GetVariablesAsync(GetVariablesRequest request)
+    public Task<GetVariablesResponse> GetVariablesAsync(GetVariablesRequest request)
     {
         _currentState.EnsureStopped();
         var session = RequireSession();
 
         var variables = new List<Variable>();
         var valueReader = new ValueReader();
+        var frameId = request.FrameId ?? 0;
 
-        if (request.VariablesReference == 0)
-        {
-            if (session.FrameMap.TryGetValue(0, out var topFrame))
-                variables.AddRange(GetFrameVariables(topFrame, valueReader, session));
+        var frame = session.FrameMap.GetValueOrDefault(frameId)
+            ?? throw new LocalRpcException("No frame available")
+            { ErrorCode = ErrorCodes.EvaluationFailed };
 
-            // Add $exception pseudo-variable if there's a current exception
-            var exVal = GetCurrentExceptionValue(session);
-            if (exVal != null)
-            {
-                var (displayValue, type, varRef) = valueReader.Read(exVal, session.VariableStore);
-                variables.Add(new Variable("$exception", displayValue, varRef, type));
-            }
+        variables.AddRange(GetFrameVariables(frame, valueReader, session));
 
-            // Add $returnValue pseudo-variable if we just stepped out
-            if (session.LastReturnValue != null)
-            {
-                var (displayValue, type, varRef) = valueReader.Read(session.LastReturnValue, session.VariableStore);
-                variables.Add(new Variable("$returnValue", displayValue, varRef, type));
-            }
-        }
-        else if (session.FrameMap.TryGetValue(request.VariablesReference - 1000000, out var frame))
+        // Add $exception pseudo-variable if there's a current exception
+        var exVal = GetCurrentExceptionValue(session);
+        if (exVal != null)
         {
-            variables.AddRange(GetFrameVariables(frame, valueReader, session));
-        }
-        else
-        {
-            var parentValue = session.VariableStore.Get(request.VariablesReference);
-            if (parentValue != null)
-                variables.AddRange(await valueReader.ExpandChildrenAsync(
-                    parentValue, session.VariableStore, this, session.StoppedThread));
+            var (displayValue, type) = valueReader.Read(exVal);
+            variables.Add(new Variable("$exception", displayValue, type));
         }
 
-        return new GetVariablesResponse(variables.ToArray());
+        // Add $returnValue pseudo-variable if we just stepped out
+        if (session.LastReturnValue != null)
+        {
+            var (displayValue, type) = valueReader.Read(session.LastReturnValue);
+            variables.Add(new Variable("$returnValue", displayValue, type));
+        }
+
+        return Task.FromResult(new GetVariablesResponse(variables.ToArray()));
     }
 
     public async Task<EvaluateResponse> EvaluateAsync(EvaluateRequest request)
@@ -486,25 +480,26 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         try
         {
             var evaluator = new SimpleEvaluator();
-            return evaluator.Evaluate(request.Expression, frame, reader, session.VariableStore, exVal, session.LastReturnValue);
+            return evaluator.Evaluate(request.Expression, frame, reader, exVal, session.LastReturnValue);
         }
         catch (LocalRpcException) when (session.StoppedThread != null)
         {
-            // SimpleEvaluator failed — try FuncEvalEvaluator for property/method/arithmetic
+            // SimpleEvaluator failed — try RoslynEvaluator for complex expressions
         }
 
-        // Parse expression AST and evaluate with func-eval
+        // Roslyn-based evaluation for complex expressions (new, LINQ, lambda, etc.)
         try
         {
-            var ast = ExpressionParser.Parse(request.Expression);
             var thread = session.StoppedThread ?? throw new LocalRpcException("No thread available for evaluation")
             { ErrorCode = ErrorCodes.EvaluationFailed };
-            var funcEval = new FuncEvalEvaluator(this, thread, GetCurrentFrame, reader, session.VariableStore, exVal, session.LastReturnValue);
-            return await funcEval.EvaluateAsync(ast);
+            var roslynEval = new RoslynEvaluator(this, thread, session);
+            return await roslynEval.EvaluateAsync(
+                request.Expression, frame, reader, exVal, session.LastReturnValue);
         }
-        catch (FormatException ex)
+        catch (LocalRpcException) { throw; }
+        catch (Exception ex)
         {
-            throw new LocalRpcException($"Invalid expression: {ex.Message}")
+            throw new LocalRpcException($"Evaluation failed: {ex.Message}")
             { ErrorCode = ErrorCodes.EvaluationFailed };
         }
     }
@@ -724,7 +719,20 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
 
         if (!result.Success)
         {
-            throw new LocalRpcException("Func-eval threw an exception in the debuggee")
+            // Try to include the exception type in the error message
+            var errorMessage = "Func-eval threw an exception in the debuggee";
+            try
+            {
+                var exValue = result.Eval.Result;
+                if (exValue != null)
+                {
+                    var typeName = Inspection.TypeNameResolver.GetCSharpTypeName(exValue);
+                    errorMessage = $"Func-eval threw {typeName} in the debuggee";
+                }
+            }
+            catch { }
+
+            throw new LocalRpcException(errorMessage)
             { ErrorCode = ErrorCodes.EvaluationFailed };
         }
 
@@ -848,7 +856,17 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
             {
                 if (_moduleBuffer != null)
                 {
-                    _moduleBuffer.Add(module);
+                    // Apply pending breakpoints immediately, before the callback
+                    // returns and ContinueProcess() resumes the debuggee. This
+                    // prevents a race where the process executes past a breakpoint
+                    // location before buffer replay can apply it.
+                    var moduleName = module.Name;
+                    if (!string.IsNullOrEmpty(moduleName))
+                    {
+                        var reader = Symbols.SymbolReaderFactory.Create(moduleName);
+                        _breakpointManager.OnModuleLoaded(moduleName, module, reader);
+                        _moduleBuffer.Add((module, moduleName, reader));
+                    }
                     return;
                 }
             }
@@ -875,8 +893,20 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         if (string.IsNullOrEmpty(moduleName)) return;
 
         var reader = Symbols.SymbolReaderFactory.Create(moduleName);
-        session.Modules[moduleName] = (module, reader);
         _breakpointManager.OnModuleLoaded(moduleName, module, reader);
+        RegisterModule(session, module, moduleName, reader, handler);
+    }
+
+    /// <summary>
+    /// Register a module with the session (symbols, optimization warnings, entry BP).
+    /// Called both during direct module loads and during buffered replay.
+    /// Breakpoint resolution is NOT done here — it must be done separately
+    /// (either in HandleModuleLoaded or during buffered callback handling).
+    /// </summary>
+    private void RegisterModule(DebugSession session, CorDebugModule module,
+        string moduleName, Symbols.ISymbolReader? reader, ManagedCallbackHandler handler)
+    {
+        session.Modules[moduleName] = (module, reader);
 
         // Warn if the module has symbols but was built with optimizations enabled
         if (reader != null && IsModuleOptimized(moduleName))
@@ -1077,7 +1107,6 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         lock (_lock)
         {
             session.StoppedThread = null;
-            session.VariableStore.Clear();
             session.FrameMap.Clear();
             session.NextFrameId = 0;
             _currentState = _currentState.Resume(this);
@@ -1222,8 +1251,8 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
                 try
                 {
                     var value = frame.GetLocalVariable(localInfo.SlotIndex);
-                    var (displayValue, type, varRef) = valueReader.Read(value, session.VariableStore);
-                    variables.Add(new Variable(localInfo.Name, displayValue, varRef, type));
+                    var (displayValue, type) = valueReader.Read(value);
+                    variables.Add(new Variable(localInfo.Name, displayValue, type));
                 }
                 catch { }
             }
@@ -1241,8 +1270,8 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
                 {
                     var value = frame.GetArgument(i);
                     var name = argNameMap.GetValueOrDefault(i, $"arg{i}");
-                    var (displayValue, type, varRef) = valueReader.Read(value, session.VariableStore);
-                    variables.Add(new Variable(name, displayValue, varRef, type));
+                    var (displayValue, type) = valueReader.Read(value);
+                    variables.Add(new Variable(name, displayValue, type));
                 }
                 catch { break; }
             }
@@ -1295,7 +1324,6 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
     {
         session.FrameMap.Clear();
         session.NextFrameId = 0;
-        session.VariableStore.Clear();
 
         if (session.StoppedThread == null) return;
         try

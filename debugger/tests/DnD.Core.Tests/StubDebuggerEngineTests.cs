@@ -160,12 +160,11 @@ public class StubDebuggerEngineTests
     [Fact]
     public async Task GetVariables_ReturnsStubVariable()
     {
-        var result = await _engine.GetVariablesAsync(new GetVariablesRequest(VariablesReference: 0));
+        var result = await _engine.GetVariablesAsync(new GetVariablesRequest());
         var variable = Assert.Single(result.Variables);
         Assert.Equal("x", variable.Name);
         Assert.Equal("42", variable.Value);
         Assert.Equal("int", variable.Type);
-        Assert.Equal(0, variable.VariablesReference);
     }
 
     [Fact]
@@ -174,7 +173,6 @@ public class StubDebuggerEngineTests
         var result = await _engine.EvaluateAsync(new EvaluateRequest(Expression: "x + 1"));
         Assert.Equal("stub:x + 1", result.Result);
         Assert.Equal("string", result.Type);
-        Assert.Equal(0, result.VariablesReference);
     }
 
     [Fact]
@@ -487,8 +485,8 @@ public class StubDebuggerEngineTests
     [Fact]
     public async Task GetVariables_DifferentReference_ReturnsSameStub()
     {
-        var r1 = await _engine.GetVariablesAsync(new GetVariablesRequest(VariablesReference: 0));
-        var r2 = await _engine.GetVariablesAsync(new GetVariablesRequest(VariablesReference: 999));
+        var r1 = await _engine.GetVariablesAsync(new GetVariablesRequest());
+        var r2 = await _engine.GetVariablesAsync(new GetVariablesRequest(FrameId: 999));
         Assert.Equal(r1.Variables[0].Name, r2.Variables[0].Name);
     }
 

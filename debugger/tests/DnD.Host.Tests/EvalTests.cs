@@ -261,7 +261,8 @@ public class EvalTests : DebugTestBase
             () => Rpc!.InvokeWithParameterObjectAsync<EvaluateResponse>(
                 "evaluate", new EvaluateRequest(Expression: "nonexistent")));
 
-        Assert.Contains("not found", ex.Message);
+        // Error message mentions the identifier (language-independent)
+        Assert.Contains("nonexistent", ex.Message);
     }
 
     [Fact]
@@ -292,7 +293,8 @@ public class EvalTests : DebugTestBase
             () => Rpc!.InvokeWithParameterObjectAsync<EvaluateResponse>(
                 "evaluate", new EvaluateRequest(Expression: "obj.NonExistent")));
 
-        Assert.Contains("not found", ex.Message);
+        // Error message mentions the member name (language-independent)
+        Assert.Contains("NonExistent", ex.Message);
     }
 
     [Fact]
@@ -302,7 +304,58 @@ public class EvalTests : DebugTestBase
             () => Rpc!.InvokeWithParameterObjectAsync<EvaluateResponse>(
                 "evaluate", new EvaluateRequest(Expression: "obj.NotAMethod()")));
 
-        Assert.Contains("not found", ex.Message);
+        // Error message mentions the method name (language-independent)
+        Assert.Contains("NotAMethod", ex.Message);
+    }
+
+    // === Roslyn-specific expressions ===
+
+    [Fact]
+    public async Task Evaluate_NewObject_ToString()
+    {
+        var result = await Rpc!.InvokeWithParameterObjectAsync<EvaluateResponse>(
+            "evaluate", new EvaluateRequest(Expression: "new object().ToString()"));
+
+        Assert.Equal("\"System.Object\"", result.Result);
+        Assert.Equal("string", result.Type);
+    }
+
+    [Fact]
+    public async Task Evaluate_NewGenericCollection()
+    {
+        var result = await Rpc!.InvokeWithParameterObjectAsync<EvaluateResponse>(
+            "evaluate", new EvaluateRequest(Expression: "new List<int>().Count"));
+
+        Assert.Equal("0", result.Result);
+    }
+
+    [Fact]
+    public async Task Evaluate_TypeofExpression()
+    {
+        var result = await Rpc!.InvokeWithParameterObjectAsync<EvaluateResponse>(
+            "evaluate", new EvaluateRequest(Expression: "typeof(int).Name"));
+
+        Assert.Equal("\"Int32\"", result.Result);
+        Assert.Equal("string", result.Type);
+    }
+
+    [Fact]
+    public async Task Evaluate_LinqWithLambda()
+    {
+        var result = await Rpc!.InvokeWithParameterObjectAsync<EvaluateResponse>(
+            "evaluate", new EvaluateRequest(Expression: "new[] { 1, 2, 3 }.Where(x => x > 1).Count()"));
+
+        Assert.Equal("2", result.Result);
+    }
+
+    [Fact]
+    public async Task Evaluate_LiteralArithmetic()
+    {
+        // Pure literal expression — no variables, goes through Roslyn path
+        var result = await Rpc!.InvokeWithParameterObjectAsync<EvaluateResponse>(
+            "evaluate", new EvaluateRequest(Expression: "1 + 2 * 3"));
+
+        Assert.Equal("7", result.Result);
     }
 
     // === Chained property access with variable in argument ===

@@ -9,7 +9,7 @@ public class SimpleEvaluator
 {
     public EvaluateResponse Evaluate(
         string expression, CorDebugILFrame frame,
-        ISymbolReader? reader, VariableStore store,
+        ISymbolReader? reader,
         CorDebugValue? exceptionValue = null,
         CorDebugValue? returnValue = null)
     {
@@ -30,8 +30,8 @@ public class SimpleEvaluator
             }
 
             var valueReader = new ValueReader();
-            var (displayValue, type, varRef) = valueReader.Read(value, store);
-            return new EvaluateResponse(displayValue, varRef, type);
+            var (displayValue, type) = valueReader.Read(value);
+            return new EvaluateResponse(displayValue, type);
         }
         catch (LocalRpcException) { throw; }
         catch (Exception ex)

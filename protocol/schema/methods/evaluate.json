@@ -14,9 +14,8 @@
     "type": "object",
     "properties": {
       "result": { "type": "string" },
-      "type": { "type": ["string", "null"] },
-      "variablesReference": { "type": "integer" }
+      "type": { "type": ["string", "null"] }
     },
-    "required": ["result", "variablesReference"]
+    "required": ["result"]
   }
 }

@@ -228,13 +228,12 @@ public class JsonRpcIntegrationTests : IAsyncLifetime
     public async Task GetVariables_ReturnsStubVariable()
     {
         var result = await _rpc!.InvokeWithParameterObjectAsync<GetVariablesResponse>(
-            "getVariables", new GetVariablesRequest(VariablesReference: 0));
+            "getVariables", new GetVariablesRequest());
 
         var variable = Assert.Single(result.Variables);
         Assert.Equal("x", variable.Name);
         Assert.Equal("42", variable.Value);
         Assert.Equal("int", variable.Type);
-        Assert.Equal(0, variable.VariablesReference);
     }
 
     [Fact]
@@ -245,7 +244,6 @@ public class JsonRpcIntegrationTests : IAsyncLifetime
 
         Assert.Equal("stub:x + 1", result.Result);
         Assert.Equal("string", result.Type);
-        Assert.Equal(0, result.VariablesReference);
     }
 
     [Fact]

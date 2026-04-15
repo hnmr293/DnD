@@ -2,34 +2,29 @@ namespace DnD.Core.Inspection;
 
 using System.Runtime.InteropServices;
 using ClrDebug;
-using DnD.Protocol;
 
 public class ValueReader
 {
-    public (string Value, string? Type, int VariablesReference) Read(
-        CorDebugValue value, VariableStore store, int depth = 0)
+    public (string Value, string? Type) Read(CorDebugValue value)
     {
         try
         {
-            return ReadCore(value, store, depth);
+            return ReadCore(value);
         }
         catch
         {
-            return ("<error reading value>", null, 0);
+            return ("<error reading value>", null);
         }
     }
 
-    private (string Value, string? Type, int VariablesReference) ReadCore(
-        CorDebugValue value, VariableStore store, int depth)
+    private (string Value, string? Type) ReadCore(CorDebugValue value)
     {
-        var originalValue = value;
-
         if (value is CorDebugReferenceValue refVal)
         {
             if (refVal.IsNull)
-                return ("null", "object", 0);
+                return ("null", "object");
             try { value = refVal.Dereference(); }
-            catch { return ("<invalid reference>", null, 0); }
+            catch { return ("<invalid reference>", null); }
         }
 
         if (value is CorDebugBoxValue boxVal)
@@ -38,7 +33,7 @@ public class ValueReader
         if (value is CorDebugStringValue strVal)
         {
             var s = strVal.GetString(strVal.Length);
-            return ($"\"{s}\"", "string", 0);
+            return ($"\"{s}\"", "string");
         }
 
         if (value is CorDebugArrayValue arrVal)
@@ -46,12 +41,7 @@ public class ValueReader
             var count = arrVal.Count;
             var elementType = arrVal.ElementType;
             var typeName = $"{GetElementTypeName(elementType)}[{count}]";
-            if (depth < 2)
-            {
-                var varRef = store.Store(originalValue);
-                return (typeName, typeName, varRef);
-            }
-            return (typeName, typeName, 0);
+            return (typeName, typeName);
         }
 
         if (value is CorDebugObjectValue objVal)
@@ -60,27 +50,58 @@ public class ValueReader
             {
                 try
                 {
-                    return ReadGenericValue((CorDebugGenericValue)value);
+                    // QI from ICorDebugObjectValue to ICorDebugGenericValue for value types
+                    var genericVal = new CorDebugGenericValue((ICorDebugGenericValue)objVal.Raw);
+                    // For boxed primitives, the element type is ValueType, not the specific
+                    // primitive type. Use the class name to determine the actual type.
+                    if (genericVal.Type == CorElementType.ValueType)
+                        return ReadBoxedPrimitive(genericVal, GetClassName(objVal));
+                    return ReadGenericValue(genericVal);
                 }
                 catch { }
             }
 
             var className = GetClassName(objVal);
-            if (depth < 2)
-            {
-                var varRef = store.Store(originalValue);
-                return ($"{{{className}}}", className, varRef);
-            }
-            return ($"{{{className}}}", className, 0);
+            return ($"{{{className}}}", className);
         }
 
-        if (value is CorDebugGenericValue genericVal)
-            return ReadGenericValue(genericVal);
+        if (value is CorDebugGenericValue genVal)
+            return ReadGenericValue(genVal);
 
-        return (value.ToString() ?? "<unknown>", null, 0);
+        return (value.ToString() ?? "<unknown>", null);
     }
 
-    private (string Value, string? Type, int VariablesReference) ReadGenericValue(CorDebugGenericValue value)
+    private (string Value, string? Type) ReadBoxedPrimitive(CorDebugGenericValue value, string className)
+    {
+        var size = (int)value.Size;
+        var buffer = Marshal.AllocHGlobal(size);
+        try
+        {
+            value.GetValue(buffer);
+            return className switch
+            {
+                "System.Boolean" => (Marshal.ReadByte(buffer) != 0 ? "true" : "false", "bool"),
+                "System.Char" => ($"'{(char)Marshal.ReadInt16(buffer)}'", "char"),
+                "System.SByte" => (((sbyte)Marshal.ReadByte(buffer)).ToString(), "sbyte"),
+                "System.Byte" => (Marshal.ReadByte(buffer).ToString(), "byte"),
+                "System.Int16" => (Marshal.ReadInt16(buffer).ToString(), "short"),
+                "System.UInt16" => (((ushort)Marshal.ReadInt16(buffer)).ToString(), "ushort"),
+                "System.Int32" => (Marshal.ReadInt32(buffer).ToString(), "int"),
+                "System.UInt32" => (((uint)Marshal.ReadInt32(buffer)).ToString(), "uint"),
+                "System.Int64" => (Marshal.ReadInt64(buffer).ToString(), "long"),
+                "System.UInt64" => (((ulong)Marshal.ReadInt64(buffer)).ToString(), "ulong"),
+                "System.Single" => (BitConverter.Int32BitsToSingle(Marshal.ReadInt32(buffer)).ToString(), "float"),
+                "System.Double" => (BitConverter.Int64BitsToDouble(Marshal.ReadInt64(buffer)).ToString(), "double"),
+                _ => ($"{{{className}}}", className)
+            };
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    private (string Value, string? Type) ReadGenericValue(CorDebugGenericValue value)
     {
         var elementType = value.Type;
         var size = (int)value.Size;
@@ -91,133 +112,25 @@ public class ValueReader
 
             return elementType switch
             {
-                CorElementType.Boolean => (Marshal.ReadByte(buffer) != 0 ? "true" : "false", "bool", 0),
-                CorElementType.Char => ($"'{(char)Marshal.ReadInt16(buffer)}'", "char", 0),
-                CorElementType.I1 => (((sbyte)Marshal.ReadByte(buffer)).ToString(), "sbyte", 0),
-                CorElementType.U1 => (Marshal.ReadByte(buffer).ToString(), "byte", 0),
-                CorElementType.I2 => (Marshal.ReadInt16(buffer).ToString(), "short", 0),
-                CorElementType.U2 => (((ushort)Marshal.ReadInt16(buffer)).ToString(), "ushort", 0),
-                CorElementType.I4 => (Marshal.ReadInt32(buffer).ToString(), "int", 0),
-                CorElementType.U4 => (((uint)Marshal.ReadInt32(buffer)).ToString(), "uint", 0),
-                CorElementType.I8 => (Marshal.ReadInt64(buffer).ToString(), "long", 0),
-                CorElementType.U8 => (((ulong)Marshal.ReadInt64(buffer)).ToString(), "ulong", 0),
-                CorElementType.R4 => (BitConverter.Int32BitsToSingle(Marshal.ReadInt32(buffer)).ToString(), "float", 0),
-                CorElementType.R8 => (BitConverter.Int64BitsToDouble(Marshal.ReadInt64(buffer)).ToString(), "double", 0),
-                _ => ($"<{elementType}>", elementType.ToString(), 0)
+                CorElementType.Boolean => (Marshal.ReadByte(buffer) != 0 ? "true" : "false", "bool"),
+                CorElementType.Char => ($"'{(char)Marshal.ReadInt16(buffer)}'", "char"),
+                CorElementType.I1 => (((sbyte)Marshal.ReadByte(buffer)).ToString(), "sbyte"),
+                CorElementType.U1 => (Marshal.ReadByte(buffer).ToString(), "byte"),
+                CorElementType.I2 => (Marshal.ReadInt16(buffer).ToString(), "short"),
+                CorElementType.U2 => (((ushort)Marshal.ReadInt16(buffer)).ToString(), "ushort"),
+                CorElementType.I4 => (Marshal.ReadInt32(buffer).ToString(), "int"),
+                CorElementType.U4 => (((uint)Marshal.ReadInt32(buffer)).ToString(), "uint"),
+                CorElementType.I8 => (Marshal.ReadInt64(buffer).ToString(), "long"),
+                CorElementType.U8 => (((ulong)Marshal.ReadInt64(buffer)).ToString(), "ulong"),
+                CorElementType.R4 => (BitConverter.Int32BitsToSingle(Marshal.ReadInt32(buffer)).ToString(), "float"),
+                CorElementType.R8 => (BitConverter.Int64BitsToDouble(Marshal.ReadInt64(buffer)).ToString(), "double"),
+                _ => ($"<{elementType}>", elementType.ToString())
             };
         }
         finally
         {
             Marshal.FreeHGlobal(buffer);
         }
-    }
-
-    public async Task<List<Variable>> ExpandChildrenAsync(
-        CorDebugValue value, VariableStore store,
-        IEvalExecutor? evalExecutor = null, CorDebugThread? thread = null)
-    {
-        var result = new List<Variable>();
-
-        try
-        {
-            var rawValue = value;
-
-            if (value is CorDebugReferenceValue refVal)
-            {
-                if (refVal.IsNull) return result;
-                value = refVal.Dereference();
-            }
-
-            if (value is CorDebugBoxValue boxVal)
-                value = boxVal.Object;
-
-            if (value is CorDebugArrayValue arrVal)
-            {
-                var count = Math.Min((int)arrVal.Count, 100);
-                for (int i = 0; i < count; i++)
-                {
-                    try
-                    {
-                        var element = arrVal.GetElementAtPosition(i);
-                        var (displayValue, type, varRef) = Read(element, store, 1);
-                        result.Add(new Variable($"[{i}]", displayValue, varRef, type));
-                    }
-                    catch { }
-                }
-                return result;
-            }
-
-            if (value is CorDebugObjectValue objVal)
-            {
-                var classType = objVal.Class;
-                var module = classType.Module;
-                var import = module.GetMetaDataInterface<MetaDataImport>();
-                var classToken = classType.Token;
-
-                var fieldNames = new HashSet<string>();
-                var fieldTokens = EnumFields(import, classToken);
-                foreach (var fieldToken in fieldTokens)
-                {
-                    try
-                    {
-                        var fieldProps = import.GetFieldProps((mdFieldDef)fieldToken);
-                        var fieldName = fieldProps.szField;
-                        fieldNames.Add(fieldName);
-                        var fieldValue = objVal.GetFieldValue(classType.Raw, (mdFieldDef)fieldToken);
-                        var (displayValue, type, varRef) = Read(fieldValue, store, 1);
-                        result.Add(new Variable(fieldName, displayValue, varRef, type));
-                    }
-                    catch { }
-                }
-
-                if (evalExecutor != null && thread != null)
-                {
-                    var propertyGetters = MetadataHelper.EnumPropertyGetters(module, import, classToken);
-                    foreach (var (propertyName, getter) in propertyGetters)
-                    {
-                        if (fieldNames.Contains($"<{propertyName}>k__BackingField"))
-                            continue;
-
-                        try
-                        {
-                            var propValue = await evalExecutor.ExecuteEvalAsync(eval =>
-                            {
-                                FuncEvalEvaluator.CallFunction(eval, getter, [rawValue]);
-                            }, thread);
-                            var (displayValue, type, varRef) = Read(propValue, store, 1);
-                            result.Add(new Variable(propertyName, displayValue, varRef, type));
-                        }
-                        catch { }
-                    }
-                }
-            }
-        }
-        catch { }
-
-        return result;
-    }
-
-    private static List<int> EnumFields(MetaDataImport import, mdTypeDef classToken)
-    {
-        var fields = new List<int>();
-        try
-        {
-            var enumHandle = IntPtr.Zero;
-            var fieldTokens = new mdFieldDef[32];
-
-            var count = import.EnumFields(ref enumHandle, classToken, fieldTokens);
-            while (count > 0)
-            {
-                for (int i = 0; i < count; i++)
-                    fields.Add((int)fieldTokens[i]);
-                count = import.EnumFields(ref enumHandle, classToken, fieldTokens);
-            }
-
-            if (enumHandle != IntPtr.Zero)
-                import.CloseEnum(enumHandle);
-        }
-        catch { }
-        return fields;
     }
 
     private static string GetClassName(CorDebugObjectValue objVal)

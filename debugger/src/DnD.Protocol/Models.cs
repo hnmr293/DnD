@@ -23,7 +23,6 @@ public record StackFrame(
 public record Variable(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("value")] string Value,
-    [property: JsonPropertyName("variablesReference")] int VariablesReference,
     [property: JsonPropertyName("type")] string? Type = null
 );
 
