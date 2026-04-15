@@ -123,21 +123,19 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
 
 ### 2.4 Variable Inspection
 
-**Purpose**: Verify getVariables expands local variables + empty scope message
+**Purpose**: Verify getVariables displays local variables for a stack frame
 
 **Steps**:
 1. Launch VariablesTest -> stops at Debugger.Break()
-2. `getVariables` (variablesReference: 0) to get local variables
+2. `getVariables` (frameId: 0, or omit for default top frame) to get local variables
    - Expected: `x: int = 42`, `name: string = "hello"`, `pi: double = 3.14`, `flag: bool = true`
-3. Array `arr` should have variablesReference > 0
-4. `getVariables` with that variablesReference to expand
-   - Expected: `[0]: int = 1`, `[1]: int = 2`, `[2]: int = 3`
-5. Specify a nonexistent variablesReference (e.g., 9999)
-   - Expected: `No variables in the current scope`
+   - Array `arr` is displayed as a summary (e.g., `int[3]`)
+3. Specify a nonexistent frameId (e.g., 9999)
+   - Expected: Error (no frame available)
 
 ### 2.5 Expression Evaluation
 
-**Purpose**: Verify evaluate with various expressions + object type variablesReference
+**Purpose**: Verify evaluate with various expressions (simple + Roslyn path)
 
 **Steps** (using EvalTest fixture):
 1. Launch -> stops at Debugger.Break()
@@ -145,7 +143,7 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
 
 | Expression | Expected Result |
 |---|---|
-| `number` | `42 (int)` — no ref |
+| `number` | `42 (int)` |
 | `greeting` | `"Hello, World!" (string)` |
 | `greeting.Length` | `13 (int)` |
 | `obj.ToString()` | `"TestClass(test, 100)" (string)` |
@@ -155,8 +153,12 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
 | `list.Count` | `3 (int)` |
 | `"hello"` | `"hello" (string)` |
 | `null` | `null (null)` |
-| `obj` | `{TestClass} (ref: N)` — N > 0  |
-| `list` | `{List<int>} (ref: N)` — N > 0  |
+| `obj` | `{TestClass} (EvalTest.TestClass)` |
+| `list` | `{List<int>} (System.Collections.Generic.List<int>)` |
+| `new object().ToString()` | `"System.Object" (string)` |
+| `typeof(int).Name` | `"Int32" (string)` |
+| `new[] { 1, 2, 3 }.Where(x => x > 1).Count()` | `2 (int)` |
+| `1 + 2 * 3` | `7 (int)` |
 | `nonexistent` | Error (variable not found) |
 
 ### 2.6 Error Handling
@@ -319,12 +321,10 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
 | # | Item | Verification Method | Expected Display |
 |---|------|---------------------|-----------------|
 | 1 | Step description | Tool list (`/mcp`) | stepIn: "If the current line has no function call, behaves like stepOver" |
-| 2 | getVariables description | Tool list (`/mcp`) | "pass the (ref: N) number shown in the output as variablesReference" |
-| 3 | Unverified BP display | Scenario 2.2 step 1 | `(pending — will activate when code is loaded)` |
-| 4 | Empty scope display | Scenario 2.4 step 5 | `No variables in the current scope` |
-| 5 | Module name display | Scenario 2.2 steps 3-4 | `[BreakpointTest.dll]` |
-| 6 | Evaluate ref display | Scenario 2.5 (obj, list) | `(ref: N)` — N > 0 |
-| 7 | breakpointId display | Scenario 2.2 step 3 | `breakpoint #1` |
+| 2 | Unverified BP display | Scenario 2.2 step 1 | `(pending — will activate when code is loaded)` |
+| 3 | Empty scope display | Scenario 2.4 step 3 | Error for nonexistent frameId |
+| 4 | Module name display | Scenario 2.2 steps 3-4 | `[BreakpointTest.dll]` |
+| 5 | breakpointId display | Scenario 2.2 step 3 | `breakpoint #1` |
 
 ### 2.14 Full Debug Session (E2E)
 
@@ -353,7 +353,7 @@ Verify that Claude autonomously performs:
 2. `getVariables(0)` to get local variables
    - Expected: `$exception` is included in the variable list (type: `System.InvalidOperationException`)
 3. Call `evaluate("$exception")`
-   - Expected: `{System.InvalidOperationException} (System.InvalidOperationException) (ref: N)`
+   - Expected: `{System.InvalidOperationException} (System.InvalidOperationException)`
 4. Call `evaluate("$exception.Message")`
    - Expected: `"Something went wrong" (string)`
 5. Call `evaluate("$exception.StackTrace")`
@@ -440,15 +440,17 @@ Verify that Claude autonomously performs:
 | 9 | Stepping | stepOver advances the line |
 | 10 | Stepping | stepIn enters a function |
 | 11 | Variables | getVariables displays local variables |
-| 12 | Variables | variablesReference expands objects |
-| 13 | Variables | Empty scope shows `No variables in the current scope` |
+| 12 | Variables | Nonexistent frameId returns error |
 | 14 | Evaluation | Variable name evaluation |
 | 15 | Evaluation | Property access (greeting.Length) |
 | 16 | Evaluation | Method call (obj.ToString()) |
 | 17 | Evaluation | Arithmetic (number + 1) |
 | 18 | Evaluation | Literals ("hello", 42, true, null) |
 | 19 | Evaluation | Generic types (list.Count) |
-| 20 | Evaluation | Object evaluate shows `(ref: N)` |
+| 20 | Evaluation | Roslyn: new object().ToString() |
+| 21-a | Evaluation | Roslyn: typeof(int).Name |
+| 21-b | Evaluation | Roslyn: LINQ with lambda |
+| 21-c | Evaluation | Roslyn: literal arithmetic |
 | 21 | Display | Stop response shows module name `[*.dll]` |
 | 22 | Display | getStackTrace shows module name `[*.dll]` |
 | 23 | Pause | pause while stopped -> no error, reason: pause |

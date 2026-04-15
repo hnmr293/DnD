@@ -60,7 +60,7 @@ public record GetStackTraceRequest(
 );
 
 public record GetVariablesRequest(
-    [property: JsonPropertyName("variablesReference")] int VariablesReference
+    [property: JsonPropertyName("frameId")] int? FrameId = null
 );
 
 public record EvaluateRequest(

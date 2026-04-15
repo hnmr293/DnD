@@ -423,47 +423,37 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         return Task.FromResult(new GetStackTraceResponse(frames.ToArray()));
     }
 
-    public async Task<GetVariablesResponse> GetVariablesAsync(GetVariablesRequest request)
+    public Task<GetVariablesResponse> GetVariablesAsync(GetVariablesRequest request)
     {
         _currentState.EnsureStopped();
         var session = RequireSession();
 
         var variables = new List<Variable>();
         var valueReader = new ValueReader();
+        var frameId = request.FrameId ?? 0;
 
-        if (request.VariablesReference == 0)
-        {
-            if (session.FrameMap.TryGetValue(0, out var topFrame))
-                variables.AddRange(GetFrameVariables(topFrame, valueReader, session));
+        var frame = session.FrameMap.GetValueOrDefault(frameId)
+            ?? throw new LocalRpcException("No frame available")
+            { ErrorCode = ErrorCodes.EvaluationFailed };
 
-            // Add $exception pseudo-variable if there's a current exception
-            var exVal = GetCurrentExceptionValue(session);
-            if (exVal != null)
-            {
-                var (displayValue, type, varRef) = valueReader.Read(exVal, session.VariableStore);
-                variables.Add(new Variable("$exception", displayValue, varRef, type));
-            }
+        variables.AddRange(GetFrameVariables(frame, valueReader, session));
 
-            // Add $returnValue pseudo-variable if we just stepped out
-            if (session.LastReturnValue != null)
-            {
-                var (displayValue, type, varRef) = valueReader.Read(session.LastReturnValue, session.VariableStore);
-                variables.Add(new Variable("$returnValue", displayValue, varRef, type));
-            }
-        }
-        else if (session.FrameMap.TryGetValue(request.VariablesReference - 1000000, out var frame))
+        // Add $exception pseudo-variable if there's a current exception
+        var exVal = GetCurrentExceptionValue(session);
+        if (exVal != null)
         {
-            variables.AddRange(GetFrameVariables(frame, valueReader, session));
-        }
-        else
-        {
-            var parentValue = session.VariableStore.Get(request.VariablesReference);
-            if (parentValue != null)
-                variables.AddRange(await valueReader.ExpandChildrenAsync(
-                    parentValue, session.VariableStore, this, session.StoppedThread));
+            var (displayValue, type) = valueReader.Read(exVal);
+            variables.Add(new Variable("$exception", displayValue, type));
         }
 
-        return new GetVariablesResponse(variables.ToArray());
+        // Add $returnValue pseudo-variable if we just stepped out
+        if (session.LastReturnValue != null)
+        {
+            var (displayValue, type) = valueReader.Read(session.LastReturnValue);
+            variables.Add(new Variable("$returnValue", displayValue, type));
+        }
+
+        return Task.FromResult(new GetVariablesResponse(variables.ToArray()));
     }
 
     public async Task<EvaluateResponse> EvaluateAsync(EvaluateRequest request)
@@ -486,25 +476,26 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         try
         {
             var evaluator = new SimpleEvaluator();
-            return evaluator.Evaluate(request.Expression, frame, reader, session.VariableStore, exVal, session.LastReturnValue);
+            return evaluator.Evaluate(request.Expression, frame, reader, exVal, session.LastReturnValue);
         }
         catch (LocalRpcException) when (session.StoppedThread != null)
         {
-            // SimpleEvaluator failed — try FuncEvalEvaluator for property/method/arithmetic
+            // SimpleEvaluator failed — try RoslynEvaluator for complex expressions
         }
 
-        // Parse expression AST and evaluate with func-eval
+        // Roslyn-based evaluation for complex expressions (new, LINQ, lambda, etc.)
         try
         {
-            var ast = ExpressionParser.Parse(request.Expression);
             var thread = session.StoppedThread ?? throw new LocalRpcException("No thread available for evaluation")
             { ErrorCode = ErrorCodes.EvaluationFailed };
-            var funcEval = new FuncEvalEvaluator(this, thread, GetCurrentFrame, reader, session.VariableStore, exVal, session.LastReturnValue);
-            return await funcEval.EvaluateAsync(ast);
+            var roslynEval = new RoslynEvaluator(this, thread, session);
+            return await roslynEval.EvaluateAsync(
+                request.Expression, frame, reader, exVal, session.LastReturnValue);
         }
-        catch (FormatException ex)
+        catch (LocalRpcException) { throw; }
+        catch (Exception ex)
         {
-            throw new LocalRpcException($"Invalid expression: {ex.Message}")
+            throw new LocalRpcException($"Evaluation failed: {ex.Message}")
             { ErrorCode = ErrorCodes.EvaluationFailed };
         }
     }
@@ -724,7 +715,20 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
 
         if (!result.Success)
         {
-            throw new LocalRpcException("Func-eval threw an exception in the debuggee")
+            // Try to include the exception type in the error message
+            var errorMessage = "Func-eval threw an exception in the debuggee";
+            try
+            {
+                var exValue = result.Eval.Result;
+                if (exValue != null)
+                {
+                    var typeName = Inspection.TypeNameResolver.GetCSharpTypeName(exValue);
+                    errorMessage = $"Func-eval threw {typeName} in the debuggee";
+                }
+            }
+            catch { }
+
+            throw new LocalRpcException(errorMessage)
             { ErrorCode = ErrorCodes.EvaluationFailed };
         }
 
@@ -1077,7 +1081,6 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         lock (_lock)
         {
             session.StoppedThread = null;
-            session.VariableStore.Clear();
             session.FrameMap.Clear();
             session.NextFrameId = 0;
             _currentState = _currentState.Resume(this);
@@ -1222,8 +1225,8 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
                 try
                 {
                     var value = frame.GetLocalVariable(localInfo.SlotIndex);
-                    var (displayValue, type, varRef) = valueReader.Read(value, session.VariableStore);
-                    variables.Add(new Variable(localInfo.Name, displayValue, varRef, type));
+                    var (displayValue, type) = valueReader.Read(value);
+                    variables.Add(new Variable(localInfo.Name, displayValue, type));
                 }
                 catch { }
             }
@@ -1241,8 +1244,8 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
                 {
                     var value = frame.GetArgument(i);
                     var name = argNameMap.GetValueOrDefault(i, $"arg{i}");
-                    var (displayValue, type, varRef) = valueReader.Read(value, session.VariableStore);
-                    variables.Add(new Variable(name, displayValue, varRef, type));
+                    var (displayValue, type) = valueReader.Read(value);
+                    variables.Add(new Variable(name, displayValue, type));
                 }
                 catch { break; }
             }
@@ -1295,7 +1298,6 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
     {
         session.FrameMap.Clear();
         session.NextFrameId = 0;
-        session.VariableStore.Clear();
 
         if (session.StoppedThread == null) return;
         try

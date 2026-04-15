@@ -45,6 +45,5 @@ public record SetExceptionBreakpointsResponse(
 
 public record EvaluateResponse(
     [property: JsonPropertyName("result")] string Result,
-    [property: JsonPropertyName("variablesReference")] int VariablesReference,
     [property: JsonPropertyName("type")] string? Type = null
 );

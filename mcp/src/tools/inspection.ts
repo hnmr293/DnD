@@ -96,11 +96,12 @@ export function registerInspectionTools(
 
   server.tool(
     "getVariables",
-    "Get variables for a given scope. Use variablesReference=0 for top-frame locals. To expand an object or array, pass the (ref: N) number shown in the output as variablesReference.",
+    "Get variables for a given stack frame. Returns local variables and arguments.",
     {
-      variablesReference: z.coerce
+      frameId: z.coerce
         .number()
-        .describe("Variables reference (0 for top-frame locals)"),
+        .optional()
+        .describe("Stack frame ID (default: top frame)"),
     },
     async (params) => {
       const client = clientManager.getClient();
@@ -116,8 +117,7 @@ export function registerInspectionTools(
         };
       }
       const lines = result.variables.map(
-        (v) =>
-          `  ${v.name}: ${v.type ?? ""} = ${v.value}${v.variablesReference ? ` (ref: ${v.variablesReference})` : ""}`,
+        (v) => `  ${v.name}: ${v.type ?? ""} = ${v.value}`,
       );
       return {
         content: [
@@ -143,14 +143,11 @@ export function registerInspectionTools(
       const client = clientManager.getClient();
       const result = await client.evaluate(params);
       const typeStr = result.type ? ` (${result.type})` : "";
-      const refStr = result.variablesReference
-        ? ` (ref: ${result.variablesReference})`
-        : "";
       return {
         content: [
           {
             type: "text" as const,
-            text: `${result.result}${typeStr}${refStr}`,
+            text: `${result.result}${typeStr}`,
           },
         ],
       };

@@ -94,12 +94,12 @@ public class StubDebuggerEngine : IDebuggerEngine
 
     public Task<GetVariablesResponse> GetVariablesAsync(GetVariablesRequest request)
         => Task.FromResult(new GetVariablesResponse(Variables: [
-            new Variable(Name: "x", Value: "42", VariablesReference: 0, Type: "int")
+            new Variable(Name: "x", Value: "42", Type: "int")
         ]));
 
     public Task<EvaluateResponse> EvaluateAsync(EvaluateRequest request)
         => Task.FromResult(new EvaluateResponse(
-            Result: $"stub:{request.Expression}", VariablesReference: 0, Type: "string"));
+            Result: $"stub:{request.Expression}", Type: "string"));
 
     public Task<GetThreadsResponse> GetThreadsAsync()
         => Task.FromResult(new GetThreadsResponse(Threads: [

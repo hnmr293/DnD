@@ -5,9 +5,8 @@
   "request": {
     "type": "object",
     "properties": {
-      "variablesReference": { "type": "integer", "description": "Scope handle returned by getStackTrace or a previous getVariables" }
-    },
-    "required": ["variablesReference"]
+      "frameId": { "type": ["integer", "null"], "description": "Stack frame ID (default: top frame)" }
+    }
   },
   "response": {
     "type": "object",

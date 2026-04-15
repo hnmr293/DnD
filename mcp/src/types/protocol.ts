@@ -22,7 +22,6 @@ export interface Variable {
   name: string;
   value: string;
   type?: string | null;
-  variablesReference: number;
 }
 
 export interface ThreadInfo {
@@ -102,7 +101,7 @@ export interface GetStackTraceParams {
 }
 
 export interface GetVariablesParams {
-  variablesReference: number;
+  frameId?: number;
 }
 
 export interface EvaluateParams {
@@ -143,7 +142,6 @@ export interface GetVariablesResult {
 export interface EvaluateResult {
   result: string;
   type?: string | null;
-  variablesReference: number;
 }
 
 export interface GetThreadsResult {

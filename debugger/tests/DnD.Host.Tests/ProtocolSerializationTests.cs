@@ -74,7 +74,7 @@ public class ProtocolSerializationTests
     [Fact]
     public void Variable_WithType()
     {
-        var v = new Variable(Name: "count", Value: "10", VariablesReference: 0, Type: "int");
+        var v = new Variable(Name: "count", Value: "10", Type: "int");
         var result = RoundTrip(v);
         Assert.Equal(v, result);
     }
@@ -82,7 +82,7 @@ public class ProtocolSerializationTests
     [Fact]
     public void Variable_WithoutType()
     {
-        var v = new Variable(Name: "x", Value: "hello", VariablesReference: 1);
+        var v = new Variable(Name: "x", Value: "hello");
         var result = RoundTrip(v);
         Assert.Equal("x", result.Name);
         Assert.Null(result.Type);
@@ -213,9 +213,9 @@ public class ProtocolSerializationTests
     [Fact]
     public void GetVariablesRequest_RoundTrip()
     {
-        var req = new GetVariablesRequest(VariablesReference: 99);
+        var req = new GetVariablesRequest(FrameId: 2);
         var result = RoundTrip(req);
-        Assert.Equal(99, result.VariablesReference);
+        Assert.Equal(2, result.FrameId);
     }
 
     // === Responses ===
@@ -261,7 +261,7 @@ public class ProtocolSerializationTests
     [Fact]
     public void EvaluateResponse_WithType()
     {
-        var resp = new EvaluateResponse(Result: "42", VariablesReference: 0, Type: "int");
+        var resp = new EvaluateResponse(Result: "42", Type: "int");
         var result = RoundTrip(resp);
         Assert.Equal("42", result.Result);
         Assert.Equal("int", result.Type);
@@ -270,7 +270,7 @@ public class ProtocolSerializationTests
     [Fact]
     public void EvaluateResponse_NullType()
     {
-        var resp = new EvaluateResponse(Result: "hello", VariablesReference: 0);
+        var resp = new EvaluateResponse(Result: "hello");
         var result = RoundTrip(resp);
         Assert.Null(result.Type);
     }
@@ -415,8 +415,8 @@ public class ProtocolSerializationTests
     public void GetVariablesResponse_RoundTrip()
     {
         var resp = new GetVariablesResponse(Variables: [
-            new Variable(Name: "x", Value: "42", VariablesReference: 0, Type: "int"),
-            new Variable(Name: "y", Value: "hello", VariablesReference: 1),
+            new Variable(Name: "x", Value: "42", Type: "int"),
+            new Variable(Name: "y", Value: "hello"),
         ]);
         var result = RoundTrip(resp);
         Assert.Equal(2, result.Variables.Length);
@@ -445,7 +445,7 @@ public class ProtocolSerializationTests
     [Fact]
     public void Variable_ValueWithNewlines()
     {
-        var v = new Variable(Name: "msg", Value: "line1\nline2\ttab", VariablesReference: 0);
+        var v = new Variable(Name: "msg", Value: "line1\nline2\ttab");
         var result = RoundTrip(v);
         Assert.Equal("line1\nline2\ttab", result.Value);
     }
