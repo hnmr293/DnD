@@ -17,9 +17,11 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
     private readonly IProcessLauncher _launcher;
     private readonly object _lock = new();
 
-    // Module-load buffering for race between Launch() and _session assignment
+    // Module-load buffering for race between Launch() and _session assignment.
+    // Stores (Module, Name, Reader) so that pending breakpoints can be applied
+    // immediately during buffering, before ContinueProcess() resumes the debuggee.
     private readonly object _moduleBufferLock = new();
-    private List<CorDebugModule>? _moduleBuffer;
+    private List<(CorDebugModule Module, string Name, Symbols.ISymbolReader? Reader)>? _moduleBuffer;
 
     // Session-crossing state
     private readonly BreakpointManager _breakpointManager = new();
@@ -47,7 +49,7 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         var handler = new ManagedCallbackHandler();
         ApplyExceptionBreakpointSettings(handler);
 
-        lock (_moduleBufferLock) { _moduleBuffer = new List<CorDebugModule>(); }
+        lock (_moduleBufferLock) { _moduleBuffer = new(); }
 
         WireCallbackEvents(handler);
 
@@ -62,15 +64,17 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         };
         Volatile.Write(ref _session, session);
 
-        // Replay buffered module loads, then switch to direct mode
-        List<CorDebugModule> buffered;
+        // Replay buffered module loads, then switch to direct mode.
+        // Breakpoints were already applied during buffering; replay only
+        // registers modules with the session (symbols, optimization warnings, entry BP).
+        List<(CorDebugModule Module, string Name, Symbols.ISymbolReader? Reader)> buffered;
         lock (_moduleBufferLock)
         {
             buffered = _moduleBuffer ?? new();
             _moduleBuffer = null;
         }
-        foreach (var module in buffered)
-            HandleModuleLoaded(session, module, handler);
+        foreach (var (module, name, reader) in buffered)
+            RegisterModule(session, module, name, reader, handler);
 
         if (result.StandardOutput != null)
             StartOutputReader(result.StandardOutput, OutputCategory.Stdout);
@@ -85,7 +89,7 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         var handler = new ManagedCallbackHandler();
         ApplyExceptionBreakpointSettings(handler);
 
-        lock (_moduleBufferLock) { _moduleBuffer = new List<CorDebugModule>(); }
+        lock (_moduleBufferLock) { _moduleBuffer = new(); }
 
         WireCallbackEvents(handler);
 
@@ -94,15 +98,15 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         var session = new DebugSession(result.CorDebug, result.Process, handler);
         Volatile.Write(ref _session, session);
 
-        // Replay buffered module loads, then switch to direct mode
-        List<CorDebugModule> buffered;
+        // Replay buffered module loads (breakpoints already applied during buffering)
+        List<(CorDebugModule Module, string Name, Symbols.ISymbolReader? Reader)> buffered;
         lock (_moduleBufferLock)
         {
             buffered = _moduleBuffer ?? new();
             _moduleBuffer = null;
         }
-        foreach (var module in buffered)
-            HandleModuleLoaded(session, module, handler);
+        foreach (var (module, name, reader) in buffered)
+            RegisterModule(session, module, name, reader, handler);
 
         return session;
     }
@@ -852,7 +856,17 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
             {
                 if (_moduleBuffer != null)
                 {
-                    _moduleBuffer.Add(module);
+                    // Apply pending breakpoints immediately, before the callback
+                    // returns and ContinueProcess() resumes the debuggee. This
+                    // prevents a race where the process executes past a breakpoint
+                    // location before buffer replay can apply it.
+                    var moduleName = module.Name;
+                    if (!string.IsNullOrEmpty(moduleName))
+                    {
+                        var reader = Symbols.SymbolReaderFactory.Create(moduleName);
+                        _breakpointManager.OnModuleLoaded(moduleName, module, reader);
+                        _moduleBuffer.Add((module, moduleName, reader));
+                    }
                     return;
                 }
             }
@@ -879,8 +893,20 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         if (string.IsNullOrEmpty(moduleName)) return;
 
         var reader = Symbols.SymbolReaderFactory.Create(moduleName);
-        session.Modules[moduleName] = (module, reader);
         _breakpointManager.OnModuleLoaded(moduleName, module, reader);
+        RegisterModule(session, module, moduleName, reader, handler);
+    }
+
+    /// <summary>
+    /// Register a module with the session (symbols, optimization warnings, entry BP).
+    /// Called both during direct module loads and during buffered replay.
+    /// Breakpoint resolution is NOT done here — it must be done separately
+    /// (either in HandleModuleLoaded or during buffered callback handling).
+    /// </summary>
+    private void RegisterModule(DebugSession session, CorDebugModule module,
+        string moduleName, Symbols.ISymbolReader? reader, ManagedCallbackHandler handler)
+    {
+        session.Modules[moduleName] = (module, reader);
 
         // Warn if the module has symbols but was built with optimizations enabled
         if (reader != null && IsModuleOptimized(moduleName))
