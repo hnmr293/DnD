@@ -89,7 +89,10 @@ export function registerProcessTools(
 
       // Process ran to completion without stopping
       const exitText =
-        formatExitedResponse(event.params) + hostPidLine + outputLine + warnings;
+        formatExitedResponse(event.params) +
+        hostPidLine +
+        outputLine +
+        warnings;
       await clientManager.dispose();
       return {
         content: [{ type: "text" as const, text: exitText }],
