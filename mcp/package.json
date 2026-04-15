@@ -1,6 +1,6 @@
 {
   "name": "dnd-mcp",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "MCP server for DnD .NET debugger — debug C# programs via MCP",
   "type": "module",
   "main": "dist/index.js",
