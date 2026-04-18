@@ -1229,6 +1229,25 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
     private static List<Variable> GetFrameVariables(CorDebugILFrame frame, ValueReader valueReader, DebugSession session)
     {
         var variables = new List<Variable>();
+
+        // Check if we're inside an async/iterator state machine's MoveNext
+        var stateMachineObj = TryGetStateMachineObject(frame);
+        if (stateMachineObj != null)
+        {
+            var unwrapped = Inspection.StateMachineHelper.UnwrapFields(stateMachineObj);
+            foreach (var (name, value) in unwrapped)
+            {
+                try
+                {
+                    var (displayValue, type) = valueReader.Read(value);
+                    variables.Add(new Variable(name, displayValue, type));
+                }
+                catch { }
+            }
+            return variables;
+        }
+
+        // Normal (non-state-machine) frame: collect locals and arguments
         var module = frame.Function.Module;
         var reader = GetSymbolReader(module, session);
 
@@ -1279,6 +1298,33 @@ public class DebuggerEngine : IDebuggerEngine, ISessionContext, IEvalExecutor, I
         catch { }
 
         return variables;
+    }
+
+    /// <summary>
+    /// If the frame is inside a state machine's MoveNext, returns the state machine
+    /// object (argument 0, dereferenced). Otherwise returns null.
+    /// </summary>
+    private static CorDebugObjectValue? TryGetStateMachineObject(CorDebugILFrame frame)
+    {
+        try
+        {
+            var thisVal = frame.GetArgument(0);
+            var typeName = Inspection.TypeNameResolver.GetCSharpTypeName(thisVal);
+            if (!Inspection.StateMachineHelper.IsStateMachineType(typeName))
+                return null;
+
+            // Dereference to get the object value
+            if (thisVal is CorDebugReferenceValue refVal)
+            {
+                if (refVal.IsNull) return null;
+                thisVal = refVal.Dereference();
+            }
+            if (thisVal is CorDebugBoxValue boxVal)
+                thisVal = boxVal.Object;
+
+            return thisVal as CorDebugObjectValue;
+        }
+        catch { return null; }
     }
 
     private static Dictionary<int, string> GetArgumentNameMap(MetaDataImport import, mdMethodDef methodToken)

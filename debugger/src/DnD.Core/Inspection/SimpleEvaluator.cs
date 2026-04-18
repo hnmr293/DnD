@@ -164,6 +164,23 @@ public class SimpleEvaluator
             catch { return null; }
         }
 
+        // Fallback: check if we're in a state machine and look up the field
+        try
+        {
+            var thisVal = frame.GetArgument(0);
+            var typeName = TypeNameResolver.GetCSharpTypeName(thisVal);
+            if (StateMachineHelper.IsStateMachineType(typeName))
+            {
+                if (thisVal is CorDebugReferenceValue refVal2 && !refVal2.IsNull)
+                    thisVal = refVal2.Dereference();
+                if (thisVal is CorDebugBoxValue boxVal2)
+                    thisVal = boxVal2.Object;
+                if (thisVal is CorDebugObjectValue objVal)
+                    return StateMachineHelper.FindVariable(objVal, name);
+            }
+        }
+        catch { }
+
         return null;
     }
 

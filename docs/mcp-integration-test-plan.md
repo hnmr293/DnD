@@ -15,6 +15,7 @@ dotnet build debugger/tests/fixtures/VariablesTest
 dotnet build debugger/tests/fixtures/EvalTest
 dotnet build debugger/tests/fixtures/ExceptionTest
 dotnet build debugger/tests/fixtures/ExitCodeTest
+dotnet build debugger/tests/fixtures/AsyncTest
 
 # TypeScript MCP server
 cd mcp && npm run build
@@ -409,7 +410,48 @@ Verify that Claude autonomously performs:
 5. `launch` -> `continue`
    - Expected: Only hit once so auto-continue -> process exits normally
 
-### 2.19 Exception Breakpoints
+### 2.19 Async Method Debugging
+
+**Purpose**: Verify getVariables and evaluate work correctly inside async state machine methods
+
+**Prerequisite**: Build the AsyncTest fixture:
+```bash
+dotnet build debugger/tests/fixtures/AsyncTest
+```
+
+**Steps**:
+1. `setBreakpoint` at AsyncTest Program.cs:27 (Console.WriteLine inside ProcessAsync, after await)
+2. `launch` AsyncTest fixture
+   - Expected: `Stopped: breakpoint #1` inside `MoveNext` of `ProcessAsync`
+3. `getVariables`
+   - Expected: Unwrapped state machine fields as user-visible variables:
+     - `count: int = 42` (captured parameter)
+     - `message: string = "hello"` (captured parameter)
+     - `prefix: string = "[test-instance]"` (hoisted local)
+     - `items: List<int>` (hoisted local)
+     - `this: MyService` (outer class instance via `<>4__this`)
+   - Internal fields (`<>1__state`, `<>t__builder`, `<>u__1`) must NOT appear
+4. `evaluate("count")`
+   - Expected: `42 (int)`
+5. `evaluate("message")`
+   - Expected: `"hello" (string)`
+6. `evaluate("prefix")`
+   - Expected: `"[test-instance]" (string)`
+7. `evaluate("items.Count")`
+   - Expected: `3 (int)`
+8. `evaluate("this._name")`
+   - Expected: `"test-instance" (string)` — accesses outer class private field
+9. `terminate` to exit
+
+**Verification Points**:
+- State machine fields are unwrapped into original variable names
+- Internal compiler-generated fields are hidden
+- Parameters captured by the state machine are accessible by their original names
+- Hoisted local variables are accessible by their original names
+- `this` resolves to the outer class instance, not the state machine struct
+- Expression evaluation works on captured variables (both simple and Roslyn paths)
+
+### 2.20 Exception Breakpoints
 
 **Purpose**: Verify exception filtering with setExceptionBreakpoints
 
@@ -478,8 +520,14 @@ Verify that Claude autonomously performs:
 | 45 | Exception BP | thrown+uncaught, no filter -> stops |
 | 46 | Exception BP | types=["ArgumentException"], InvalidOp -> skipped |
 | 47 | Exception BP | types=["InvalidOperation"], InvalidOp -> stops |
-| 48 | E2E | Claude autonomously completes a debug session |
-| 49 | E2E | Claude autonomously completes an exception debug session |
+| 48 | Async | getVariables unwraps state machine fields |
+| 49 | Async | Internal fields (<>1__state, etc.) are hidden |
+| 50 | Async | Captured parameters accessible (count, message) |
+| 51 | Async | Hoisted locals accessible (prefix, items) |
+| 52 | Async | `this` resolves to outer class, not state machine |
+| 53 | Async | evaluate works on captured variables |
+| 54 | E2E | Claude autonomously completes a debug session |
+| 55 | E2E | Claude autonomously completes an exception debug session |
 
 ---
 

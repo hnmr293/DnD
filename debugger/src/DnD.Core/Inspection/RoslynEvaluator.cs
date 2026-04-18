@@ -110,60 +110,97 @@ public class RoslynEvaluator
                 try
                 {
                     var thisValue = frame.GetArgument(0);
-                    ctx.ThisValue = thisValue;
-                    ctx.ThisTypeName = TypeNameResolver.GetCSharpTypeName(thisValue);
+                    var thisTypeName = TypeNameResolver.GetCSharpTypeName(thisValue);
+
+                    // State machine: unwrap <>4__this as the real "this" and
+                    // extract hoisted fields as locals
+                    if (StateMachineHelper.IsStateMachineType(thisTypeName))
+                    {
+                        var smObj = DereferenceToObject(thisValue);
+                        if (smObj != null)
+                        {
+                            // Get outer "this" if the async method is an instance method
+                            var outerThis = StateMachineHelper.GetOuterThis(smObj);
+                            if (outerThis != null)
+                            {
+                                ctx.ThisValue = outerThis;
+                                ctx.ThisTypeName = TypeNameResolver.GetCSharpTypeName(outerThis);
+                            }
+                            // else: static async method — no outer this
+
+                            // Add state machine fields as locals
+                            var unwrapped = StateMachineHelper.UnwrapFields(smObj);
+                            foreach (var (name, value) in unwrapped)
+                            {
+                                if (name == "this") continue; // already handled above
+                                try
+                                {
+                                    var typeName = TypeNameResolver.GetCSharpTypeName(value);
+                                    ctx.Locals.Add(new EvalLocal(name, typeName, value));
+                                }
+                                catch { }
+                            }
+                            ctx.IsStateMachine = true;
+                        }
+                    }
+                    else
+                    {
+                        ctx.ThisValue = thisValue;
+                        ctx.ThisTypeName = thisTypeName;
+                    }
                 }
                 catch { }
             }
         }
         catch { }
 
-        // Collect local variables
-        if (reader != null)
+        // Collect local variables and parameters (skip if state machine — already handled)
+        if (!ctx.IsStateMachine)
         {
+            if (reader != null)
+            {
+                try
+                {
+                    var ipResult = frame.IP;
+                    var ilOffset = (int)ipResult.pnOffset;
+                    var locals = reader.GetLocalVariables((int)frame.Function.Token, ilOffset);
+                    foreach (var local in locals)
+                    {
+                        try
+                        {
+                            var value = frame.GetLocalVariable(local.SlotIndex);
+                            var typeName = TypeNameResolver.GetCSharpTypeName(value);
+                            ctx.Locals.Add(new EvalLocal(local.Name, typeName, value));
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            }
+
             try
             {
-                var ipResult = frame.IP;
-                var ilOffset = (int)ipResult.pnOffset;
-                var locals = reader.GetLocalVariables((int)frame.Function.Token, ilOffset);
-                foreach (var local in locals)
+                var module = frame.Function.Module;
+                var import = module.GetMetaDataInterface<MetaDataImport>();
+                var methodToken = (mdMethodDef)frame.Function.Token;
+                var argNameMap = GetArgumentNameMap(import, methodToken, ctx.IsStatic);
+
+                int startIdx = ctx.IsStatic ? 0 : 1;
+                for (int i = startIdx; ; i++)
                 {
                     try
                     {
-                        var value = frame.GetLocalVariable(local.SlotIndex);
+                        var value = frame.GetArgument(i);
+                        var name = argNameMap.GetValueOrDefault(i, $"arg{i}");
+                        if (name == "this") continue;
                         var typeName = TypeNameResolver.GetCSharpTypeName(value);
-                        ctx.Locals.Add(new EvalLocal(local.Name, typeName, value));
+                        ctx.Locals.Add(new EvalLocal(name, typeName, value));
                     }
-                    catch { }
+                    catch { break; }
                 }
             }
             catch { }
         }
-
-        // Collect parameters
-        try
-        {
-            var module = frame.Function.Module;
-            var import = module.GetMetaDataInterface<MetaDataImport>();
-            var methodToken = (mdMethodDef)frame.Function.Token;
-            var argNameMap = GetArgumentNameMap(import, methodToken, ctx.IsStatic);
-
-            // Start from index 1 for instance methods (0 is 'this')
-            int startIdx = ctx.IsStatic ? 0 : 1;
-            for (int i = startIdx; ; i++)
-            {
-                try
-                {
-                    var value = frame.GetArgument(i);
-                    var name = argNameMap.GetValueOrDefault(i, $"arg{i}");
-                    if (name == "this") continue;
-                    var typeName = TypeNameResolver.GetCSharpTypeName(value);
-                    ctx.Locals.Add(new EvalLocal(name, typeName, value));
-                }
-                catch { break; }
-            }
-        }
-        catch { }
 
         // Pseudo-variables
         if (exceptionValue != null)
@@ -307,6 +344,11 @@ public class RoslynEvaluator
     /// </summary>
     private static bool NeedsObjectParameter(string typeName)
     {
+        // Compiler-generated type names (e.g., <Method>d__3) contain '<'
+        // which is invalid in C# source. Must use object.
+        if (typeName.Contains('<'))
+            return true;
+
         // Primitives — always public
         if (typeName is "int" or "uint" or "long" or "ulong" or
             "short" or "ushort" or "byte" or "sbyte" or
@@ -760,11 +802,24 @@ public class RoslynEvaluator
     {
         public string? SourceFilePath { get; set; }
         public bool IsStatic { get; set; }
+        public bool IsStateMachine { get; set; }
         public string? ThisTypeName { get; set; }
         public CorDebugValue? ThisValue { get; set; }
         public List<EvalLocal> Locals { get; } = new();
         public bool HasException { get; set; }
         public bool HasReturnValue { get; set; }
+    }
+
+    private static CorDebugObjectValue? DereferenceToObject(CorDebugValue value)
+    {
+        if (value is CorDebugReferenceValue refVal)
+        {
+            if (refVal.IsNull) return null;
+            value = refVal.Dereference();
+        }
+        if (value is CorDebugBoxValue boxVal)
+            value = boxVal.Object;
+        return value as CorDebugObjectValue;
     }
 
     private record EvalLocal(string Name, string TypeName, CorDebugValue Value);
