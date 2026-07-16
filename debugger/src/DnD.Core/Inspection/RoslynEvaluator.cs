@@ -84,6 +84,10 @@ public class RoslynEvaluator
     {
         var ctx = new EvalContext();
 
+        // Module containing the stopped frame — its copy wins when loaded
+        // assemblies collide on simple name (see CollectReferences)
+        try { ctx.FrameModulePath = frame.Function.Module.Name; } catch { }
+
         // Get source file for using extraction
         try
         {
@@ -394,7 +398,7 @@ public class RoslynEvaluator
 
     private (byte[] AssemblyBytes, int EvalMethodToken) Compile(string wrapperSource, EvalContext context)
     {
-        var (references, assemblyNames) = CollectReferences();
+        var (references, assemblyNames) = CollectReferences(context.FrameModulePath);
 
         // Generate IgnoresAccessChecksTo attributes source
         var attrSource = GenerateIgnoresAccessChecksSource(assemblyNames);
@@ -488,22 +492,53 @@ public class RoslynEvaluator
         { ErrorCode = ErrorCodes.EvaluationFailed };
     }
 
-    private (List<MetadataReference> References, List<string> AssemblyNames) CollectReferences()
+    private (List<MetadataReference> References, List<string> AssemblyNames) CollectReferences(
+        string? frameModulePath)
     {
+        var modulePaths = new List<string>(_session.Modules.Count);
+        foreach (var (path, _) in _session.Modules)
+            modulePaths.Add(path);
+
+        return BuildReferences(modulePaths, frameModulePath, FindRuntimeDirectory());
+    }
+
+    /// <summary>
+    /// Builds the Roslyn reference set from loaded module paths plus runtime directory DLLs.
+    /// Two references with the same simple name would fail compilation with CS1704
+    /// (side-by-side import of unsigned assemblies is not allowed), so only the first
+    /// copy per simple name is kept. The stopped frame's module is processed first so
+    /// its copy wins on collision — its types are the ones the expression context sees.
+    /// </summary>
+    internal static (List<MetadataReference> References, List<string> AssemblyNames) BuildReferences(
+        IReadOnlyList<string> modulePaths, string? frameModulePath, string? runtimeDir)
+    {
+        var orderedPaths = new List<string>(modulePaths.Count);
+        foreach (var path in modulePaths)
+        {
+            if (frameModulePath != null &&
+                string.Equals(path, frameModulePath, StringComparison.OrdinalIgnoreCase))
+                orderedPaths.Insert(0, path);
+            else
+                orderedPaths.Add(path);
+        }
+
         var addedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var addedSimpleNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var assemblyNames = new List<string>();
         var references = new List<MetadataReference>();
 
         // Loaded modules — already running in the CLR, so always valid references.
         // Use HasMetadata check only (R2R assemblies have native code but are valid).
-        foreach (var (path, _) in _session.Modules)
+        foreach (var path in orderedPaths)
         {
             if (File.Exists(path) && addedPaths.Add(path) && HasManagedMetadata(path))
             {
                 try
                 {
-                    references.Add(MetadataReference.CreateFromFile(path));
                     var asmName = System.Reflection.AssemblyName.GetAssemblyName(path);
+                    if (asmName.Name != null && !addedSimpleNames.Add(asmName.Name))
+                        continue;
+                    references.Add(MetadataReference.CreateFromFile(path));
                     if (asmName.Name != null)
                         assemblyNames.Add(asmName.Name);
                 }
@@ -512,7 +547,6 @@ public class RoslynEvaluator
         }
 
         // Runtime directory DLLs — unloaded assemblies for compilation references.
-        var runtimeDir = FindRuntimeDirectory();
         if (runtimeDir != null)
         {
             foreach (var dll in Directory.EnumerateFiles(runtimeDir, "*.dll"))
@@ -521,8 +555,10 @@ public class RoslynEvaluator
                 {
                     try
                     {
-                        references.Add(MetadataReference.CreateFromFile(dll));
                         var asmName = System.Reflection.AssemblyName.GetAssemblyName(dll);
+                        if (asmName.Name != null && !addedSimpleNames.Add(asmName.Name))
+                            continue;
+                        references.Add(MetadataReference.CreateFromFile(dll));
                         if (asmName.Name != null)
                             assemblyNames.Add(asmName.Name);
                     }
@@ -801,6 +837,7 @@ public class RoslynEvaluator
     private class EvalContext
     {
         public string? SourceFilePath { get; set; }
+        public string? FrameModulePath { get; set; }
         public bool IsStatic { get; set; }
         public bool IsStateMachine { get; set; }
         public string? ThisTypeName { get; set; }
