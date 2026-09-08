@@ -68,7 +68,8 @@ public static class TypeNameResolver
     }
 
     /// <summary>
-    /// Reads the metadata type name (szTypeDef) of an object value.
+    /// Reads the metadata type name of an object value, qualified with the
+    /// declaring types of nested types.
     /// Generic types keep their arity suffix (e.g. "System.Collections.Generic.List`1").
     /// Returns null when the metadata cannot be read.
     /// </summary>
@@ -79,10 +80,58 @@ public static class TypeNameResolver
             var classType = objVal.Class;
             var module = classType.Module;
             var import = module.GetMetaDataInterface<MetaDataImport>();
-            var typeProps = import.GetTypeDefProps(classType.Token);
-            return typeProps.szTypeDef;
+            return GetTypeDefFullName(import, classType.Token);
         }
         catch { return null; }
+    }
+
+    /// <summary>
+    /// Builds the type name of a TypeDef. Metadata stores a nested type under its
+    /// simple name only ("Inner"), so the declaring types are prepended to make the
+    /// name resolvable from C# source ("Outer.Inner").
+    /// </summary>
+    private static string GetTypeDefFullName(MetaDataImport import, mdTypeDef token)
+    {
+        var typeProps = import.GetTypeDefProps(token);
+        var name = typeProps.szTypeDef;
+
+        var visibility = typeProps.pdwTypeDefFlags & CorTypeAttr.tdVisibilityMask;
+        if (visibility < CorTypeAttr.tdNestedPublic)
+            return name;
+
+        try
+        {
+            var enclosing = import.GetNestedClassProps(token);
+            return $"{GetTypeDefFullName(import, enclosing)}.{name}";
+        }
+        catch { return name; }
+    }
+
+    /// <summary>
+    /// Removes generic arity suffixes ("Outer`1.Inner`2" → "Outer.Inner") so that
+    /// type arguments can be appended in C# syntax.
+    /// </summary>
+    private static string StripGenericArity(string typeName)
+    {
+        var backtickIdx = typeName.IndexOf('`');
+        if (backtickIdx < 0)
+            return typeName;
+
+        var sb = new System.Text.StringBuilder(typeName.Length);
+        for (int i = 0; i < typeName.Length; i++)
+        {
+            if (typeName[i] != '`')
+            {
+                sb.Append(typeName[i]);
+                continue;
+            }
+            // Skip the arity digits following the backtick
+            i++;
+            while (i < typeName.Length && char.IsDigit(typeName[i]))
+                i++;
+            i--;
+        }
+        return sb.ToString();
     }
 
     /// <summary>
@@ -129,8 +178,7 @@ public static class TypeNameResolver
             var cls = new CorDebugClass(classRaw);
             var module = cls.Module;
             var import = module.GetMetaDataInterface<MetaDataImport>();
-            var typeProps = import.GetTypeDefProps(cls.Token);
-            var fullName = typeProps.szTypeDef;
+            var fullName = GetTypeDefFullName(import, cls.Token);
 
             // Check for generic type parameters
             exactType.EnumerateTypeParameters(out var typeParamEnum);
@@ -139,10 +187,8 @@ public static class TypeNameResolver
                 typeParamEnum.GetCount(out var count);
                 if (count > 0)
                 {
-                    // Remove backtick suffix (e.g., "System.Collections.Generic.List`1" → "System.Collections.Generic.List")
-                    var backtickIdx = fullName.IndexOf('`');
-                    if (backtickIdx >= 0)
-                        fullName = fullName[..backtickIdx];
+                    // "System.Collections.Generic.List`1" → "System.Collections.Generic.List"
+                    fullName = StripGenericArity(fullName);
 
                     var typeArgs = new string[(int)count];
                     for (int i = 0; i < (int)count; i++)
