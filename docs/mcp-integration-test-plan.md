@@ -130,7 +130,7 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
 1. Launch VariablesTest -> stops at Debugger.Break()
 2. `getVariables` (frameId: 0, or omit for default top frame) to get local variables
    - Expected: `x: int = 42`, `name: string = "hello"`, `pi: double = 3.14`, `flag: bool = true`
-   - Array `arr` is displayed as a summary (e.g., `int[3]`)
+   - Array `arr` is displayed with its type and total length (e.g., `int[] (Length = 3)`)
 3. Specify a nonexistent frameId (e.g., 9999)
    - Expected: Error (no frame available)
 
@@ -537,3 +537,31 @@ dotnet build debugger/tests/fixtures/AsyncTest
 - The `DND_HOST_PATH` environment variable must specify the absolute path to the host DLL (relative paths would resolve from `mcp/dist/`).
 - Windows only (ICorDebug COM API).
 - `Launch_NonexistentProgram` takes ~30 seconds due to DbgShim timeout.
+
+### Deterministic reproduction: launch misses Debugger.Break()
+
+The integration run found that EvalTest could exit normally instead of stopping at
+`Debugger.Break()`. The runtime startup callback returned before
+`DebugActiveProcess` attached the debugger. The CLR can resume initialization as
+soon as that callback returns ([API contract](https://learn.microsoft.com/en-us/dotnet/core/unmanaged-api/debugging/registerforruntimestartup-function)).
+
+Run the deterministic regression test from the repository root:
+
+```bash
+dotnet test debugger/tests/DnD.Core.Tests --filter FullyQualifiedName~RuntimeStartupCallback_MustAttachBeforeReturning
+```
+
+The test invokes the production startup protocol with a controlled runtime
+callback on a separate thread. It joins that thread before allowing the launcher
+to proceed and records whether the debugger was already attached when the callback
+returned. OS process creation and native registration are substituted; the
+production callback and attachment logic are exercised. No sleeps, repeated
+launches, fixtures, or probability thresholds are involved. The join timeout only
+detects a test deadlock.
+
+The startup callback now completes initialization, managed-handler registration,
+and attachment before returning, for both launch and attach. The regression test
+passes with this ordering and fails if attachment is moved back outside the
+callback. Additional tests cover startup/registration failures, exceptions during
+attachment, and missing startup notifications; each verifies error propagation
+and cleanup without allowing managed exceptions to escape the native callback.
