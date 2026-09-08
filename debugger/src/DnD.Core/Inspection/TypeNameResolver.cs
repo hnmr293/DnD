@@ -59,18 +59,50 @@ public static class TypeNameResolver
 
         if (value is CorDebugObjectValue objVal)
         {
-            try
-            {
-                var classType = objVal.Class;
-                var module = classType.Module;
-                var import = module.GetMetaDataInterface<MetaDataImport>();
-                var typeProps = import.GetTypeDefProps(classType.Token);
-                return typeProps.szTypeDef;
-            }
-            catch { }
+            var typeDefName = GetTypeDefName(objVal);
+            if (typeDefName != null)
+                return typeDefName;
         }
 
         return "object";
+    }
+
+    /// <summary>
+    /// Reads the metadata type name (szTypeDef) of an object value.
+    /// Generic types keep their arity suffix (e.g. "System.Collections.Generic.List`1").
+    /// Returns null when the metadata cannot be read.
+    /// </summary>
+    internal static string? GetTypeDefName(CorDebugObjectValue objVal)
+    {
+        try
+        {
+            var classType = objVal.Class;
+            var module = classType.Module;
+            var import = module.GetMetaDataInterface<MetaDataImport>();
+            var typeProps = import.GetTypeDefProps(classType.Token);
+            return typeProps.szTypeDef;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Resolves the element type name of an array value (e.g. "int" for int[3],
+    /// "System.Collections.Generic.List&lt;string&gt;" for List&lt;string&gt;[]).
+    /// </summary>
+    internal static string GetArrayElementTypeName(CorDebugArrayValue arrVal)
+    {
+        // The exact type of an array carries its element type as the first type parameter.
+        try
+        {
+            var val2 = (ICorDebugValue2)arrVal.Raw;
+            val2.GetExactType(out var exactType);
+            exactType.GetFirstTypeParameter(out var elemType);
+            return FormatExactType(elemType);
+        }
+        catch { }
+
+        return GetPrimitiveTypeName(arrVal.ElementType)
+            ?? (arrVal.ElementType == CorElementType.String ? "string" : "object");
     }
 
     private static string FormatExactType(ICorDebugType exactType)
