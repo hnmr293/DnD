@@ -39,8 +39,9 @@ public class ValueReader
         if (value is CorDebugArrayValue arrVal)
         {
             var count = arrVal.Count;
-            var elementTypeName = TypeNameResolver.GetArrayElementTypeName(arrVal);
-            return ($"{elementTypeName}[{count}]", TypeNameResolver.GetCSharpTypeName(arrVal));
+            var typeName = TypeNameResolver.GetCSharpTypeName(arrVal);
+            // Keep array ranks in their C# order; the total length is not a rank.
+            return ($"{typeName} (Length = {count})", typeName);
         }
 
         if (value is CorDebugObjectValue objVal)

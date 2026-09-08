@@ -230,6 +230,34 @@ public class FuncEvalMultidimensionalArrayTests : FuncEvalTestBase
         Assert.Equal(expectedType, Assert.Single(vars.Variables, v => v.Name == name).Type);
     }
 
+    [Theory]
+    [InlineData("jagged", "int[][,] (Length = 1)")]
+    [InlineData("matrixOfVectors", "int[,][] (Length = 6)")]
+    [InlineData("cube", "int[,,] (Length = 24)")]
+    [InlineData("vectors", "int[][] (Length = 2)")]
+    [InlineData("genericArrays", "System.Collections.Generic.List<int[]>[,] (Length = 6)")]
+    public async Task GetVariables_ArraySummary_PreservesShapeAndSeparatesLength(string name, string expectedValue)
+    {
+        var vars = await Rpc!.InvokeWithParameterObjectAsync<GetVariablesResponse>(
+            "getVariables", new GetVariablesRequest());
+
+        Assert.Equal(expectedValue, Assert.Single(vars.Variables, v => v.Name == name).Value);
+    }
+
+    [Theory]
+    [InlineData("jagged", "int[][,]", "int[][,] (Length = 1)")]
+    [InlineData("cube", "int[,,]", "int[,,] (Length = 24)")]
+    [InlineData("new int[0]", "int[]", "int[] (Length = 0)")]
+    [InlineData("new int[] { 1, 2, 3 }", "int[]", "int[] (Length = 3)")]
+    public async Task Evaluate_ArraySummary_PreservesShapeAndSeparatesLength(
+        string expression, string expectedType, string expectedValue)
+    {
+        var result = await EvaluateAsync(expression);
+
+        Assert.Equal(expectedType, result.Type);
+        Assert.Equal(expectedValue, result.Result);
+    }
+
     [Fact]
     public async Task Evaluate_ConstantExpression_WithMultidimensionalArrayLocals()
     {

@@ -130,7 +130,7 @@ Each scenario issues instructions in the Claude Code chat and verifies MCP tool 
 1. Launch VariablesTest -> stops at Debugger.Break()
 2. `getVariables` (frameId: 0, or omit for default top frame) to get local variables
    - Expected: `x: int = 42`, `name: string = "hello"`, `pi: double = 3.14`, `flag: bool = true`
-   - Array `arr` is displayed as a summary (e.g., `int[3]`)
+   - Array `arr` is displayed with its type and total length (e.g., `int[] (Length = 3)`)
 3. Specify a nonexistent frameId (e.g., 9999)
    - Expected: Error (no frame available)
 
