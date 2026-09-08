@@ -53,8 +53,8 @@ public static class TypeNameResolver
 
         if (value is CorDebugArrayValue arrVal)
         {
-            var elemTypeName = GetPrimitiveTypeName(arrVal.ElementType) ?? "object";
-            return $"{elemTypeName}[]";
+            var elemTypeName = GetArrayElementTypeName(arrVal);
+            return $"{elemTypeName}[{new string(',', arrVal.Rank - 1)}]";
         }
 
         if (value is CorDebugObjectValue objVal)
@@ -108,16 +108,14 @@ public static class TypeNameResolver
     }
 
     /// <summary>
-    /// Removes generic arity suffixes ("Outer`1.Inner`2" → "Outer.Inner") so that
-    /// type arguments can be appended in C# syntax.
+    /// Replaces each declaring type's arity suffix with its own type arguments.
+    /// The runtime enumerates arguments from outermost to innermost, while each
+    /// metadata name records only the number introduced by that type.
     /// </summary>
-    private static string StripGenericArity(string typeName)
+    private static string FormatGenericTypeName(string typeName, string[] typeArgs)
     {
-        var backtickIdx = typeName.IndexOf('`');
-        if (backtickIdx < 0)
-            return typeName;
-
         var sb = new System.Text.StringBuilder(typeName.Length);
+        int argumentIndex = 0;
         for (int i = 0; i < typeName.Length; i++)
         {
             if (typeName[i] != '`')
@@ -125,10 +123,14 @@ public static class TypeNameResolver
                 sb.Append(typeName[i]);
                 continue;
             }
-            // Skip the arity digits following the backtick
-            i++;
+            int arityStart = ++i;
             while (i < typeName.Length && char.IsDigit(typeName[i]))
                 i++;
+            int arity = int.Parse(typeName.AsSpan(arityStart, i - arityStart));
+            sb.Append('<');
+            sb.Append(string.Join(", ", typeArgs, argumentIndex, arity));
+            sb.Append('>');
+            argumentIndex += arity;
             i--;
         }
         return sb.ToString();
@@ -165,11 +167,25 @@ public static class TypeNameResolver
         if (elementType == CorElementType.String)
             return "string";
 
-        if (elementType == CorElementType.SZArray)
+        if (elementType is CorElementType.SZArray or CorElementType.Array)
         {
-            exactType.GetFirstTypeParameter(out var elemType);
-            var elemName = FormatExactType(elemType);
-            return $"{elemName}[]";
+            // C# writes array ranks from outermost to innermost: an array of
+            // rectangular arrays is int[][,], not int[,][]. Collect the ranks
+            // before formatting the final element type (which may be generic).
+            var ranks = new System.Text.StringBuilder();
+            do
+            {
+                int rank = 1;
+                if (elementType == CorElementType.Array)
+                    exactType.GetRank(out rank);
+                ranks.Append('[').Append(',', rank - 1).Append(']');
+                exactType.GetFirstTypeParameter(out var elemType);
+                exactType = elemType;
+                exactType.GetType(out elementType);
+            }
+            while (elementType is CorElementType.SZArray or CorElementType.Array);
+
+            return $"{FormatExactType(exactType)}{ranks}";
         }
 
         if (elementType == CorElementType.Class || elementType == CorElementType.ValueType)
@@ -187,16 +203,13 @@ public static class TypeNameResolver
                 typeParamEnum.GetCount(out var count);
                 if (count > 0)
                 {
-                    // "System.Collections.Generic.List`1" → "System.Collections.Generic.List"
-                    fullName = StripGenericArity(fullName);
-
                     var typeArgs = new string[(int)count];
                     for (int i = 0; i < (int)count; i++)
                     {
                         typeParamEnum.Next(1, out var typeArg, out _);
                         typeArgs[i] = FormatExactType(typeArg);
                     }
-                    return $"{fullName}<{string.Join(", ", typeArgs)}>";
+                    return FormatGenericTypeName(fullName, typeArgs);
                 }
             }
 

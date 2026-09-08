@@ -29,6 +29,12 @@ class Program
             case "nested-type-unique":
                 UniqueNestedTypeLocal();
                 break;
+            case "nested-generic":
+                NestedGenericLocals();
+                break;
+            case "multidimensional-arrays":
+                MultidimensionalArrayLocals();
+                break;
             default:
                 throw new ArgumentException($"unknown mode: {mode}");
         }
@@ -84,6 +90,29 @@ class Program
         Debugger.Break();
         Console.WriteLine(map.Count);
     }
+
+    static void NestedGenericLocals()
+    {
+        var item = new Outer<int>.Inner<string>();
+        var leaf = new Outer<int>.Leaf();
+        var deep = new Outer<int>.Inner<string>.Leaf<double>();
+        var keys = new Dictionary<int, string> { [1] = "one" }.Keys;
+        Debugger.Break();
+        Console.WriteLine($"{item.GetId()} {leaf} {deep} {keys.Count}");
+    }
+
+    static void MultidimensionalArrayLocals()
+    {
+        var matrices = new List<int[,]> { new int[2, 3] };
+        var jagged = new int[1][,];
+        jagged[0] = new int[2, 3];
+        var matrixOfVectors = new int[2, 3][];
+        var cube = new int[2, 3, 4];
+        var vectors = new int[2][];
+        var genericArrays = new List<int[]>[2, 3];
+        Debugger.Break();
+        Console.WriteLine($"{matrices.Count} {jagged.Length} {matrixOfVectors.Length} {cube.Length} {vectors.Length} {genericArrays.Length}");
+    }
 }
 
 struct Point
@@ -95,6 +124,18 @@ struct Point
 }
 
 enum Color { Red, Green, Blue }
+
+class Outer<T>
+{
+    public class Inner<U>
+    {
+        public int GetId() => 7;
+
+        public class Leaf<V> { }
+    }
+
+    public class Leaf { }
+}
 
 class Outer
 {

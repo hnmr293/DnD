@@ -40,9 +40,7 @@ public class ValueReader
         {
             var count = arrVal.Count;
             var elementTypeName = TypeNameResolver.GetArrayElementTypeName(arrVal);
-            var rank = arrVal.Rank;
-            var arraySuffix = rank > 1 ? $"[{new string(',', rank - 1)}]" : "[]";
-            return ($"{elementTypeName}[{count}]", $"{elementTypeName}{arraySuffix}");
+            return ($"{elementTypeName}[{count}]", TypeNameResolver.GetCSharpTypeName(arrVal));
         }
 
         if (value is CorDebugObjectValue objVal)

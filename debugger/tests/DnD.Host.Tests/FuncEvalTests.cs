@@ -170,3 +170,79 @@ public class FuncEvalUniqueNestedTypeTests : FuncEvalTestBase
         Assert.Equal("1", result.Result);
     }
 }
+
+[Collection("DebugSession")]
+[Trait("Category", "FuncEval")]
+public class FuncEvalNestedGenericTests : FuncEvalTestBase
+{
+    protected override string Mode => "nested-generic";
+
+    [Theory]
+    [InlineData("item", "Outer<int>.Inner<string>")]
+    [InlineData("leaf", "Outer<int>.Leaf")]
+    [InlineData("deep", "Outer<int>.Inner<string>.Leaf<double>")]
+    [InlineData("keys", "System.Collections.Generic.Dictionary<int, string>.KeyCollection")]
+    public async Task GetVariables_PreservesTypeArgumentsOnDeclaringTypes(string name, string expectedType)
+    {
+        var vars = await Rpc!.InvokeWithParameterObjectAsync<GetVariablesResponse>(
+            "getVariables", new GetVariablesRequest());
+
+        var variable = Assert.Single(vars.Variables, v => v.Name == name);
+        Assert.Equal(expectedType, variable.Type);
+        Assert.Equal($"{{{expectedType}}}", variable.Value);
+    }
+
+    [Fact]
+    public async Task Evaluate_ConstantExpression_WithNestedGenericLocals()
+    {
+        var result = await EvaluateAsync("1 + 1");
+
+        Assert.Equal("2", result.Result);
+    }
+
+    [Fact]
+    public async Task Evaluate_MethodOnNestedGenericType()
+    {
+        var result = await EvaluateAsync("item.GetId()");
+
+        Assert.Equal("7", result.Result);
+    }
+}
+
+[Collection("DebugSession")]
+[Trait("Category", "FuncEval")]
+public class FuncEvalMultidimensionalArrayTests : FuncEvalTestBase
+{
+    protected override string Mode => "multidimensional-arrays";
+
+    [Theory]
+    [InlineData("matrices", "System.Collections.Generic.List<int[,]>")]
+    [InlineData("jagged", "int[][,]")]
+    [InlineData("matrixOfVectors", "int[,][]")]
+    [InlineData("cube", "int[,,]")]
+    [InlineData("vectors", "int[][]")]
+    [InlineData("genericArrays", "System.Collections.Generic.List<int[]>[,]")]
+    public async Task GetVariables_PreservesArrayRanksAndElementTypes(string name, string expectedType)
+    {
+        var vars = await Rpc!.InvokeWithParameterObjectAsync<GetVariablesResponse>(
+            "getVariables", new GetVariablesRequest());
+
+        Assert.Equal(expectedType, Assert.Single(vars.Variables, v => v.Name == name).Type);
+    }
+
+    [Fact]
+    public async Task Evaluate_ConstantExpression_WithMultidimensionalArrayLocals()
+    {
+        var result = await EvaluateAsync("1 + 1");
+
+        Assert.Equal("2", result.Result);
+    }
+
+    [Fact]
+    public async Task Evaluate_CollectionCount_WithMultidimensionalArrayTypeArgument()
+    {
+        var result = await EvaluateAsync("matrices.Count");
+
+        Assert.Equal("1", result.Result);
+    }
+}
