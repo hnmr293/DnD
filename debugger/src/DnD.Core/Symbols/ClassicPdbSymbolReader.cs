@@ -24,8 +24,24 @@ public class ClassicPdbSymbolReader : ISymbolReader
         var rawImport = (IMetaDataImport)importObj;
 
         // Create the symbol binder via COM activation
-        var binderType = Type.GetTypeFromCLSID(CLSID_CorSymBinder, throwOnError: true)!;
-        var rawBinder = (ISymUnmanagedBinder)Activator.CreateInstance(binderType)!;
+        var binderType = Type.GetTypeFromCLSID(CLSID_CorSymBinder, throwOnError: true)
+            ?? throw new InvalidOperationException("Failed to resolve CorSymBinder CLSID");
+        var classicBinder = Activator.CreateInstance(binderType)
+            ?? throw new InvalidOperationException("Failed to create CorSymBinder");
+
+        // Activator.CreateInstance yields a built-in RCW, but ClrDebug's interfaces are
+        // ComWrappers-based ([GeneratedComInterface]). Re-wrap the binder with ClrDebug's
+        // ComWrappers so it can accept the ComWrappers-based IMetaDataImport above.
+        var punk = Marshal.GetIUnknownForObject(classicBinder);
+        ISymUnmanagedBinder rawBinder;
+        try
+        {
+            rawBinder = (ISymUnmanagedBinder)Extensions.GetObjectForIUnknown(punk);
+        }
+        finally
+        {
+            Marshal.Release(punk);
+        }
         var binder = new SymUnmanagedBinder(rawBinder);
 
         _reader = binder.GetReaderForFile(rawImport, modulePath,
