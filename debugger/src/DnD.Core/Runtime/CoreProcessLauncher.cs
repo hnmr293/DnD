@@ -29,89 +29,113 @@ public class CoreProcessLauncher : IProcessLauncher
         var (pid, hThread, hProcess, stdoutRead, stderrRead) =
             CreateProcessWithCapturedOutput(commandLine, cwd);
 
-        var tcs = new TaskCompletionSource<CorDebug>();
-
-        var unregisterToken = _dbgShim.RegisterForRuntimeStartup(
-            pid,
-            (pCordb, parameter, hr) =>
-            {
-                if (hr == HRESULT.S_OK && pCordb != null)
-                {
-                    tcs.TrySetResult(pCordb);
-                }
-                else
-                {
-                    tcs.TrySetException(new InvalidOperationException(
-                        $"Failed to get ICorDebug from runtime startup. HRESULT: {hr}"));
-                }
-            },
-            IntPtr.Zero);
-
-        ResumeThread(hThread);
-
-        // Wait for the runtime to start (with timeout)
-        if (!tcs.Task.Wait(TimeSpan.FromSeconds(30)))
+        IntPtr unregisterToken = IntPtr.Zero;
+        bool registered = false;
+        try
         {
-            _dbgShim.UnregisterForRuntimeStartup(unregisterToken);
-            CloseHandle(hThread);
-            CloseHandle(hProcess);
-            throw new TimeoutException("Timed out waiting for .NET runtime to start.");
+            var result = CompleteRuntimeStartup(
+                pid, callback,
+                startupCallback =>
+                {
+                    unregisterToken = _dbgShim.RegisterForRuntimeStartup(
+                        pid, startupCallback, IntPtr.Zero);
+                    registered = true;
+                    ResumeThread(hThread);
+                },
+                () =>
+                {
+                    try
+                    {
+                        if (registered)
+                            _dbgShim.UnregisterForRuntimeStartup(unregisterToken);
+                    }
+                    finally
+                    {
+                        CloseHandle(hThread);
+                        CloseHandle(hProcess);
+                    }
+                });
+
+            return result with { StandardOutput = stdoutRead, StandardError = stderrRead };
         }
+        catch
+        {
+            stdoutRead.Dispose();
+            stderrRead.Dispose();
+            throw;
+        }
+    }
 
-        _dbgShim.UnregisterForRuntimeStartup(unregisterToken);
-        CloseHandle(hThread);
-        CloseHandle(hProcess);
+    // Keep the startup protocol testable without creating an OS process. Production
+    // and tests use the same callback, wait, cleanup, and debugger-attachment logic.
+    internal static LaunchResult CompleteRuntimeStartup(
+        int pid,
+        CorDebugManagedCallback callback,
+        Action<RuntimeStartupCallback> registerAndResume,
+        Action unregisterAndCloseHandles,
+        TimeSpan? timeout = null)
+    {
+        var tcs = new TaskCompletionSource<LaunchResult>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var corDebug = tcs.Task.Result;
-        corDebug.Initialize();
-        corDebug.SetManagedHandler(callback);
+        try
+        {
+            registerAndResume((pCordb, parameter, hr) =>
+            {
+                try
+                {
+                    if (hr != HRESULT.S_OK || pCordb == null)
+                        throw new InvalidOperationException(
+                            $"Failed to get ICorDebug from runtime startup. HRESULT: {hr}");
 
-        var process = corDebug.DebugActiveProcess(pid, false);
+                    // The CLR can run user code as soon as this callback returns.
+                    // Attach while runtime initialization is still blocked so that
+                    // early breakpoints and Debugger.Break() cannot be missed.
+                    pCordb.Initialize();
+                    pCordb.SetManagedHandler(callback);
+                    var process = pCordb.DebugActiveProcess(pid, false);
+                    tcs.TrySetResult(new LaunchResult(pCordb, process));
+                }
+                catch (Exception ex)
+                {
+                    // Never let managed exceptions escape a native callback.
+                    tcs.TrySetException(ex);
+                }
+            });
 
-        return new LaunchResult(corDebug, process, stdoutRead, stderrRead);
+            return tcs.Task.WaitAsync(timeout ?? TimeSpan.FromSeconds(30))
+                .GetAwaiter().GetResult();
+        }
+        finally
+        {
+            // Unregister on the launching thread, including callback failures.
+            // DbgShim waits for the callback to finish before releasing it.
+            unregisterAndCloseHandles();
+        }
     }
 
     public LaunchResult Attach(
         int processId,
         CorDebugManagedCallback callback)
     {
-        // For attach, use RegisterForRuntimeStartup to get the ICorDebug
-        // This works if the runtime is already loaded
-        var tcs = new TaskCompletionSource<CorDebug>();
-
-        var unregisterToken = _dbgShim.RegisterForRuntimeStartup(
-            processId,
-            (pCordb, parameter, hr) =>
+        // Use the same startup ordering when attaching before the CLR is loaded.
+        // Attach can't capture output — the process already has its own handles.
+        IntPtr unregisterToken = IntPtr.Zero;
+        bool registered = false;
+        return CompleteRuntimeStartup(
+            processId, callback,
+            startupCallback =>
             {
-                if (hr == HRESULT.S_OK && pCordb != null)
-                {
-                    tcs.TrySetResult(pCordb);
-                }
-                else
-                {
-                    tcs.TrySetException(new InvalidOperationException(
-                        $"Failed to get ICorDebug for attach. HRESULT: {hr}"));
-                }
+                unregisterToken = _dbgShim.RegisterForRuntimeStartup(
+                    processId, startupCallback, IntPtr.Zero);
+                registered = true;
             },
-            IntPtr.Zero);
-
-        // For an already-running process, the callback fires immediately
-        if (!tcs.Task.Wait(TimeSpan.FromSeconds(10)))
-        {
-            _dbgShim.UnregisterForRuntimeStartup(unregisterToken);
-            throw new TimeoutException("Timed out waiting to attach to .NET runtime.");
-        }
-
-        _dbgShim.UnregisterForRuntimeStartup(unregisterToken);
-
-        var corDebug = tcs.Task.Result;
-        corDebug.Initialize();
-        corDebug.SetManagedHandler(callback);
-
-        var process = corDebug.DebugActiveProcess(processId, false);
-
-        // Attach can't capture output — the process already has its own handles
-        return new LaunchResult(corDebug, process);
+            () =>
+            {
+                if (registered)
+                    _dbgShim.UnregisterForRuntimeStartup(unregisterToken);
+            },
+            TimeSpan.FromSeconds(10));
     }
 
     internal static string FindDbgShimPath()

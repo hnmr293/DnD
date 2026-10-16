@@ -9,6 +9,7 @@ using DnD.Core.Symbols;
 using DnD.Protocol;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using StreamJsonRpc;
 
 /// <summary>
@@ -220,6 +221,11 @@ public class RoslynEvaluator
             ctx.HasReturnValue = true;
         }
 
+        // A value whose type cannot be named in C# can neither be declared as a
+        // parameter nor passed as object (func-eval does not box). Dropping it keeps
+        // the rest of the frame evaluable; referencing it reports an unknown name.
+        ctx.Locals.RemoveAll(l => l.IsValueType && !IsWritableTypeName(l.TypeName));
+
         return ctx;
     }
 
@@ -285,10 +291,13 @@ public class RoslynEvaluator
 
         if (context.ThisValue != null)
         {
-            bool useObject = NeedsObjectParameter(context.ThisTypeName!);
+            bool useObject = NeedsObjectParameter(
+                context.ThisTypeName!, context.ThisValue is not CorDebugReferenceValue);
             var paramType = useObject ? "object" : context.ThisTypeName!;
             paramList.Add($"            {paramType} __p{paramIdx}");
-            if (useObject)
+            // A compiler-generated type name cannot be written as a cast; the
+            // variable stays typed as object instead of breaking the compilation.
+            if (useObject && IsWritableTypeName(context.ThisTypeName!))
                 castStatements.Add($"            var __this = ({context.ThisTypeName})__p{paramIdx};");
             else
                 castStatements.Add($"            var __this = __p{paramIdx};");
@@ -297,17 +306,20 @@ public class RoslynEvaluator
 
         foreach (var local in context.Locals)
         {
-            bool useObject = NeedsObjectParameter(local.TypeName);
+            bool useObject = NeedsObjectParameter(local.TypeName, local.IsValueType);
             var paramType = useObject ? "object" : local.TypeName;
             paramList.Add($"            {paramType} __p{paramIdx}");
-            if (useObject)
+            if (useObject && IsWritableTypeName(local.TypeName))
                 castStatements.Add($"            var {local.Name} = ({local.TypeName})__p{paramIdx};");
             else
                 castStatements.Add($"            var {local.Name} = __p{paramIdx};");
             paramIdx++;
         }
 
-        sb.AppendLine("        internal static object __Eval(");
+        // private: a parameter typed after an internal debuggee type would otherwise
+        // be less accessible than the method (CS0051). Func-eval calls the method by
+        // metadata token, so its accessibility is irrelevant at run time.
+        sb.AppendLine("        private static object __Eval(");
         sb.AppendLine(string.Join(",\n", paramList));
         sb.AppendLine("        )");
         sb.AppendLine("        {");
@@ -346,10 +358,20 @@ public class RoslynEvaluator
     /// Primitives and System types are always public and safe to use directly.
     /// User-defined types might be internal and would cause CS0051.
     /// </summary>
-    private static bool NeedsObjectParameter(string typeName)
+    private static bool NeedsObjectParameter(string typeName, bool isValueType)
     {
-        // Compiler-generated type names (e.g., <Method>d__3) contain '<'
-        // which is invalid in C# source. Must use object.
+        // Compiler-generated type names (e.g., <Method>d__3) cannot be written
+        // in C# source. Must use object.
+        if (!IsWritableTypeName(typeName))
+            return true;
+
+        // Func-eval passes arguments without boxing, so a value type bound to an
+        // 'object' parameter would be dereferenced as if it were a reference.
+        if (isValueType)
+            return false;
+
+        // Constructed generics of reference types stay on 'object': their type
+        // arguments may be internal and would cause CS0051.
         if (typeName.Contains('<'))
             return true;
 
@@ -366,9 +388,29 @@ public class RoslynEvaluator
 
         // Arrays — check element type
         if (typeName.EndsWith("[]"))
-            return NeedsObjectParameter(typeName[..^2]);
+            return NeedsObjectParameter(typeName[..^2], isValueType: false);
 
         // User-defined types — use object to avoid CS0051
+        return true;
+    }
+
+    /// <summary>
+    /// Checks whether a type name can be written in C# source. Compiler-generated
+    /// names (e.g. "&lt;Method&gt;d__3") start an identifier with '&lt;', unlike a type
+    /// argument list ("List&lt;int&gt;") where '&lt;' follows an identifier.
+    /// </summary>
+    private static bool IsWritableTypeName(string typeName)
+    {
+        for (int i = 0; i < typeName.Length; i++)
+        {
+            if (typeName[i] != '<')
+                continue;
+            if (i == 0)
+                return false;
+            var prev = typeName[i - 1];
+            if (!char.IsLetterOrDigit(prev) && prev != '_')
+                return false;
+        }
         return true;
     }
 
@@ -468,13 +510,23 @@ public class RoslynEvaluator
             }
 
             // CS0234/CS0246: missing namespace/type in using directive.
-            // Strip the problematic using directives and retry.
-            var usingErrors = errors
-                .Where(d => d.Id is "CS0234" or "CS0246" && d.Location.SourceTree == syntaxTree)
+            // Strip the problematic using directives and retry. Only diagnostics
+            // located inside a using directive may be stripped — the same error ids
+            // also appear on generated parameter declarations, and dropping those
+            // would silently remove the variable instead of reporting the problem.
+            var recoverableErrors = errors
+                .Where(d => d.Id is not "CS0009" and not "CS1509")
                 .ToList();
-            if (usingErrors.Count > 0 && usingErrors.Count == errors.Count(d => d.Id is not "CS0009" and not "CS1509"))
+            var badUsings = recoverableErrors
+                .Where(d => d.Id is "CS0234" or "CS0246" && d.Location.SourceTree == syntaxTree)
+                .Select(d => FindEnclosingUsingDirective(syntaxTree, d))
+                .OfType<UsingDirectiveSyntax>()
+                .ToList();
+            // Any error outside a using directive keeps the count below the total,
+            // so the diagnostics are reported instead of being stripped away.
+            if (badUsings.Count > 0 && badUsings.Count == recoverableErrors.Count)
             {
-                currentSource = StripProblematicUsings(currentSource, usingErrors);
+                currentSource = StripUsingDirectives(syntaxTree, badUsings);
                 syntaxTree = CSharpSyntaxTree.ParseText(currentSource);
                 continue;
             }
@@ -571,25 +623,31 @@ public class RoslynEvaluator
     }
 
     /// <summary>
+    /// Returns the using directive a diagnostic was reported on, or null when the
+    /// diagnostic is located anywhere else.
+    /// </summary>
+    private static UsingDirectiveSyntax? FindEnclosingUsingDirective(SyntaxTree tree, Diagnostic diagnostic)
+    {
+        try
+        {
+            var root = tree.GetRoot();
+            var span = diagnostic.Location.SourceSpan;
+            if (span.End > root.FullSpan.End)
+                return null;
+            return root.FindNode(span, getInnermostNodeForTie: true)
+                .FirstAncestorOrSelf<UsingDirectiveSyntax>();
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
     /// Removes using directives that caused CS0234/CS0246 compilation errors.
     /// </summary>
-    private static string StripProblematicUsings(string source, List<Diagnostic> usingErrors)
+    private static string StripUsingDirectives(SyntaxTree tree, List<UsingDirectiveSyntax> directives)
     {
-        var lines = source.Split('\n');
-        var errorLineNumbers = new HashSet<int>();
-        foreach (var error in usingErrors)
-        {
-            var lineSpan = error.Location.GetLineSpan();
-            errorLineNumbers.Add(lineSpan.StartLinePosition.Line);
-        }
-
-        var result = new System.Text.StringBuilder();
-        for (int i = 0; i < lines.Length; i++)
-        {
-            if (!errorLineNumbers.Contains(i))
-                result.AppendLine(lines[i].TrimEnd('\r'));
-        }
-        return result.ToString();
+        var root = tree.GetRoot();
+        var newRoot = root.RemoveNodes(directives.Distinct(), SyntaxRemoveOptions.KeepNoTrivia);
+        return newRoot?.ToFullString() ?? tree.ToString();
     }
 
     private static string GenerateIgnoresAccessChecksSource(List<string> assemblyNames)
@@ -859,7 +917,14 @@ public class RoslynEvaluator
         return value as CorDebugObjectValue;
     }
 
-    private record EvalLocal(string Name, string TypeName, CorDebugValue Value);
+    private record EvalLocal(string Name, string TypeName, CorDebugValue Value)
+    {
+        /// <summary>
+        /// True when the value is not a reference. Func-eval passes arguments without
+        /// boxing, so such a value must not be bound to an 'object' parameter.
+        /// </summary>
+        public bool IsValueType => Value is not CorDebugReferenceValue;
+    }
 
     /// <summary>
     /// Sets TopLevelBinderFlags.IgnoreAccessibility on CSharpCompilationOptions via reflection.

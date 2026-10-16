@@ -5,8 +5,9 @@ using DnD.Core.Runtime;
 using DnD.Protocol;
 
 /// <summary>
-/// Deterministic tests for the race condition between Launch() and _session assignment.
-/// Module loads fired during Launch() must be buffered and replayed after _session is set.
+/// Deterministic tests for runtime startup and the race between Launch() and
+/// _session assignment. Startup must attach before releasing the CLR; module
+/// loads must be buffered and replayed after _session is set.
 /// </summary>
 public class DebuggerEngineRaceConditionTests : IDisposable
 {
@@ -24,6 +25,126 @@ public class DebuggerEngineRaceConditionTests : IDisposable
     }
 
     public void Dispose() => _engine.Dispose();
+
+    /// <summary>
+    /// RegisterForRuntimeStartup holds CLR initialization only until its callback
+    /// returns. Force that callback to finish before the launching thread resumes:
+    /// a debuggee could otherwise execute Debugger.Break() before we attach.
+    ///
+    /// This is a single controlled interleaving, not a retry/stress test. The thread
+    /// join fixes the ordering; its timeout only guards against a test deadlock.
+    /// See https://learn.microsoft.com/en-us/dotnet/core/unmanaged-api/debugging/registerforruntimestartup-function
+    /// </summary>
+    [Fact]
+    public void RuntimeStartupCallback_MustAttachBeforeReturning()
+    {
+        var runtime = new MockCorDebug();
+        var corDebug = new CorDebug(runtime);
+        var handler = new CorDebugManagedCallback();
+        bool attachedWhenCallbackReturned = false;
+        int cleanupCount = 0;
+
+        var result = CoreProcessLauncher.CompleteRuntimeStartup(
+            9999, handler,
+            startupCallback =>
+            {
+                Exception? callbackError = null;
+                var callbackThread = new Thread(() =>
+                {
+                    try
+                    {
+                        startupCallback(corDebug, IntPtr.Zero, HRESULT.S_OK);
+                        // The CLR may start running user code at this exact point.
+                        attachedWhenCallbackReturned = runtime.Attached;
+                    }
+                    catch (Exception ex) { callbackError = ex; }
+                }) { IsBackground = true };
+
+                callbackThread.Start();
+                Assert.True(callbackThread.Join(TimeSpan.FromSeconds(10)),
+                    "Runtime startup callback did not finish; test interleaving could not be established.");
+                Assert.Null(callbackError);
+            },
+            () => cleanupCount++);
+
+        Assert.Same(corDebug, result.CorDebug);
+        Assert.Equal(1, cleanupCount);
+        Assert.True(runtime.Initialized);
+        Assert.Same(handler, runtime.ManagedHandler);
+        Assert.True(runtime.Attached, "The launcher should eventually attach.");
+        Assert.True(attachedWhenCallbackReturned,
+            "Runtime startup callback returned before DebugActiveProcess attached the debugger. " +
+            "The CLR can execute past Debugger.Break() before launch finishes.");
+    }
+
+    [Theory]
+    [InlineData("Initialize")]
+    [InlineData("SetManagedHandler")]
+    [InlineData("DebugActiveProcess")]
+    public void RuntimeStartupCallback_AttachmentFailureIsReportedAndCleanedUp(string failingOperation)
+    {
+        var expectedError = new InvalidOperationException($"{failingOperation} failed");
+        var runtime = new MockCorDebug { FailingOperation = failingOperation, Failure = expectedError };
+        Exception? callbackError = null;
+        int cleanupCount = 0;
+
+        var error = Record.Exception(() => CoreProcessLauncher.CompleteRuntimeStartup(
+            9999, new CorDebugManagedCallback(),
+            startupCallback => callbackError = Record.Exception(() =>
+                startupCallback(new CorDebug(runtime), IntPtr.Zero, HRESULT.S_OK)),
+            () => cleanupCount++,
+            TimeSpan.Zero));
+
+        Assert.Null(callbackError); // A native callback must never receive a managed exception.
+        Assert.Same(expectedError, error);
+        Assert.Equal(1, cleanupCount);
+        Assert.False(runtime.Attached);
+    }
+
+    [Fact]
+    public void RuntimeStartupCallback_StartupFailureIsReportedAndCleanedUp()
+    {
+        int cleanupCount = 0;
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            CoreProcessLauncher.CompleteRuntimeStartup(
+                9999, new CorDebugManagedCallback(),
+                startupCallback => startupCallback(null!, IntPtr.Zero, HRESULT.E_FAIL),
+                () => cleanupCount++,
+                TimeSpan.Zero));
+
+        Assert.Contains("Failed to get ICorDebug", error.Message);
+        Assert.Equal(1, cleanupCount);
+    }
+
+    [Fact]
+    public void RuntimeStartupCallback_RegistrationFailureIsReportedAndCleanedUp()
+    {
+        var expectedError = new InvalidOperationException("Registration failed");
+        int cleanupCount = 0;
+
+        var error = Record.Exception(() => CoreProcessLauncher.CompleteRuntimeStartup(
+            9999, new CorDebugManagedCallback(),
+            _ => throw expectedError,
+            () => cleanupCount++));
+
+        Assert.Same(expectedError, error);
+        Assert.Equal(1, cleanupCount);
+    }
+
+    [Fact]
+    public void RuntimeStartupCallback_MissingNotificationTimesOutAndCleansUp()
+    {
+        int cleanupCount = 0;
+
+        Assert.Throws<TimeoutException>(() => CoreProcessLauncher.CompleteRuntimeStartup(
+            9999, new CorDebugManagedCallback(),
+            _ => { },
+            () => cleanupCount++,
+            TimeSpan.Zero));
+
+        Assert.Equal(1, cleanupCount);
+    }
 
     /// <summary>
     /// Verifies that a module loaded during Launch() (before _session assignment)
@@ -183,12 +304,40 @@ public class DebuggerEngineRaceConditionTests : IDisposable
 
     private class MockCorDebug : ICorDebug
     {
-        public HRESULT Initialize() => HRESULT.S_OK;
+        public bool Initialized { get; private set; }
+        public ICorDebugManagedCallback? ManagedHandler { get; private set; }
+        public bool Attached { get; private set; }
+        public string? FailingOperation { get; init; }
+        public Exception? Failure { get; init; }
+
+        public HRESULT Initialize()
+        {
+            ThrowIfConfigured(nameof(Initialize));
+            Initialized = true;
+            return HRESULT.S_OK;
+        }
         public HRESULT Terminate() => HRESULT.S_OK;
-        public HRESULT SetManagedHandler(ICorDebugManagedCallback pCallback) => HRESULT.S_OK;
+        public HRESULT SetManagedHandler(ICorDebugManagedCallback pCallback)
+        {
+            ThrowIfConfigured(nameof(SetManagedHandler));
+            ManagedHandler = pCallback;
+            return HRESULT.S_OK;
+        }
         public HRESULT SetUnmanagedHandler(ICorDebugUnmanagedCallback pCallback) => HRESULT.E_NOTIMPL;
         public HRESULT CreateProcess(string lpApplicationName, string lpCommandLine, ref SECURITY_ATTRIBUTES lpProcessAttributes, ref SECURITY_ATTRIBUTES lpThreadAttributes, bool bInheritHandles, CreateProcessFlags dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory, ref STARTUPINFOW lpStartupInfo, ref PROCESS_INFORMATION lpProcessInformation, CorDebugCreateProcessFlags debuggingFlags, out ICorDebugProcess ppProcess) { ppProcess = null!; return HRESULT.E_NOTIMPL; }
-        public HRESULT DebugActiveProcess(int id, bool win32Attach, out ICorDebugProcess ppProcess) { ppProcess = null!; return HRESULT.E_NOTIMPL; }
+        public HRESULT DebugActiveProcess(int id, bool win32Attach, out ICorDebugProcess ppProcess)
+        {
+            ThrowIfConfigured(nameof(DebugActiveProcess));
+            Attached = true;
+            ppProcess = new MockCorDebugProcess();
+            return HRESULT.S_OK;
+        }
+
+        private void ThrowIfConfigured(string operation)
+        {
+            if (FailingOperation == operation)
+                throw Failure!;
+        }
         public HRESULT EnumerateProcesses(out ICorDebugProcessEnum ppProcess) { ppProcess = null!; return HRESULT.E_NOTIMPL; }
         public HRESULT GetProcess(int dwProcessId, out ICorDebugProcess ppProcess) { ppProcess = null!; return HRESULT.E_NOTIMPL; }
         public HRESULT CanLaunchOrAttach(int dwProcessId, int win32DebuggingEnabled) => HRESULT.E_NOTIMPL;
