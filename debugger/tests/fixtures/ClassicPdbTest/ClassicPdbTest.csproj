@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <!-- Windows (full) PDB instead of the SDK default portable PDB -->
+    <DebugType>full</DebugType>
+  </PropertyGroup>
+
+</Project>
